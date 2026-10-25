@@ -1,8 +1,8 @@
 import functools
+import hashlib
 import os
+import re
 import secrets
-import sqlite3
-import threading
 import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -10,9 +10,13 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from flask import Flask, g, jsonify, render_template, request, session
 from werkzeug.security import check_password_hash, generate_password_hash
+from werkzeug.middleware.proxy_fix import ProxyFix
+import psycopg
 
 
 from localization import error_message, field_label, localize_demo
+from invitations import DeliveryError, portal_url, send_invitation, validate_channel
+from database import Connection, INTEGRITY_ERRORS, SCHEMA_VERSION, consume_login_attempt, migrate
 
 ROOT = Path(__file__).resolve().parent
 
@@ -22,20 +26,54 @@ def create_app(config=None):
     app.config.update(
         SECRET_KEY=os.getenv('SECRET_KEY') or secrets.token_hex(32),
         DATABASE=os.getenv('DATABASE_PATH', str(ROOT / 'data' / 'gym.sqlite3')),
+        DATABASE_URL=os.getenv('DATABASE_URL', '').strip(),
+        DATABASE_SSLMODE=os.getenv('DATABASE_SSLMODE', 'require'),
+        APP_ENV=os.getenv('APP_ENV', 'development'),
+        AUTO_MIGRATE=os.getenv('AUTO_MIGRATE', 'true').lower() == 'true',
         DEMO_MODE=os.getenv('DEMO_MODE', 'true').lower() == 'true',
         SESSION_COOKIE_HTTPONLY=True,
         SESSION_COOKIE_SAMESITE='Lax',
         SESSION_COOKIE_SECURE=os.getenv('RENDER', '').lower() == 'true',
         PERMANENT_SESSION_LIFETIME=timedelta(hours=12),
         MAX_CONTENT_LENGTH=64 * 1024,
+        PUBLIC_BASE_URL=os.getenv('PUBLIC_BASE_URL') or os.getenv('RENDER_EXTERNAL_URL', ''),
+        RESEND_API_KEY=os.getenv('RESEND_API_KEY', ''),
+        INVITE_FROM_EMAIL=os.getenv('INVITE_FROM_EMAIL', ''),
+        SMS_PROVIDER=os.getenv('SMS_PROVIDER', 'websms').lower(),
+        WEBSMS_API_KEY=os.getenv('WEBSMS_API_KEY', ''),
+        WEBSMS_SENDER=os.getenv('WEBSMS_SENDER', ''),
+        TWILIO_ACCOUNT_SID=os.getenv('TWILIO_ACCOUNT_SID', ''),
+        TWILIO_AUTH_TOKEN=os.getenv('TWILIO_AUTH_TOKEN', ''),
+        TWILIO_FROM_NUMBER=os.getenv('TWILIO_FROM_NUMBER', ''),
     )
     if config:
         app.config.update(config)
+    production = app.config['APP_ENV'] == 'production'
+    if production:
+        if app.config['DEMO_MODE']:
+            raise RuntimeError('Production requires DEMO_MODE=false.')
+        if not app.config['DATABASE_URL'].startswith(('postgresql://', 'postgres://')):
+            raise RuntimeError('Production requires a PostgreSQL DATABASE_URL.')
+        if app.config['DATABASE_SSLMODE'] not in ('require', 'verify-ca', 'verify-full'):
+            raise RuntimeError('Production requires encrypted PostgreSQL connections.')
+        configured_secret = (config or {}).get('SECRET_KEY') or os.getenv('SECRET_KEY')
+        if not configured_secret or len(configured_secret) < 32:
+            raise RuntimeError('Production requires a stable SECRET_KEY of at least 32 characters.')
+        portal_url(app.config)
+        app.config['SESSION_COOKIE_SECURE'] = True
+        from urllib.parse import urlsplit
+        app.config['TRUSTED_HOSTS'] = list(filter(None, {
+            urlsplit(app.config['PUBLIC_BASE_URL']).hostname, os.getenv('RENDER_EXTERNAL_HOSTNAME')}))
+    if os.getenv('RENDER', '').lower() == 'true':
+        # Render is the single trusted ingress. Never trust arbitrary Host headers.
+        app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=0)
     if os.getenv('RENDER') and not os.getenv('SECRET_KEY') and not app.config.get('TESTING'):
         raise RuntimeError('Set SECRET_KEY in Render before starting the application.')
     try:
-        gym_zone = ZoneInfo(os.getenv('GYM_TIMEZONE', 'Europe/Bucharest'))
+        gym_zone = ZoneInfo(os.getenv('GYM_TIMEZONE', 'Asia/Nicosia'))
     except ZoneInfoNotFoundError:
+        if production:
+            raise RuntimeError('Set GYM_TIMEZONE to a valid IANA timezone.') from None
         gym_zone = timezone.utc
 
     def now():
@@ -43,9 +81,7 @@ def create_app(config=None):
 
     def db():
         if 'db' not in g:
-            g.db = sqlite3.connect(app.config['DATABASE'], timeout=20)
-            g.db.row_factory = sqlite3.Row
-            g.db.execute('PRAGMA foreign_keys=ON')
+            g.db = Connection(app.config)
         return g.db
 
     @app.teardown_appcontext
@@ -61,8 +97,11 @@ def create_app(config=None):
         def decorator(fn):
             @functools.wraps(fn)
             def wrapped(*args, **kwargs):
+                if request.method in ('POST', 'PUT', 'DELETE'):
+                    db().begin_write()
                 user = db().execute('SELECT * FROM users WHERE id=?', (session.get('uid'),)).fetchone()
-                if not user or (user['is_demo'] and not app.config['DEMO_MODE']):
+                if (not user or (user['is_demo'] and not app.config['DEMO_MODE'])
+                        or session.get('version', 0) != user['session_version']):
                     return error('Please sign in to continue.', 401)
                 if owner and user['role'] != 'owner':
                     return error('This area is for the studio owner.', 403)
@@ -82,6 +121,8 @@ def create_app(config=None):
         response.headers['X-Content-Type-Options'] = 'nosniff'
         response.headers['X-Frame-Options'] = 'DENY'
         response.headers['Referrer-Policy'] = 'same-origin'
+        if production:
+            response.headers['Strict-Transport-Security'] = 'max-age=31536000'
         response.headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
         if request.path.startswith('/api/'):
             response.headers['Cache-Control'] = 'no-store'
@@ -94,6 +135,11 @@ def create_app(config=None):
     @app.errorhandler(413)
     def too_large(_):
         return error('That request is too large.', 413)
+
+    @app.errorhandler(psycopg.OperationalError)
+    def database_unavailable(_):
+        app.logger.error('Database request failed; check database availability.')
+        return error('Η υπηρεσία δεν είναι προσωρινά διαθέσιμη. Δοκίμασε ξανά σε λίγο.', 503)
 
     def payload():
         value = request.get_json(silent=True)
@@ -123,6 +169,51 @@ def create_app(config=None):
     def public_user(row):
         return {key: row[key] for key in ('id', 'name', 'email', 'role', 'goal', 'priority')}
 
+    def invitation_info(uid):
+        row = db().execute('''SELECT channel,recipient,status,expires_at,used_at,last_attempt_at
+            FROM member_invitations WHERE user_id=?''', (uid,)).fetchone()
+        if not row:
+            return None
+        info = dict(row)
+        if not info['used_at'] and info['expires_at'] <= time.time():
+            info['status'] = 'expired'
+        return info
+
+    def prepare_invitation(uid, channel, recipient):
+        token = secrets.token_urlsafe(32)
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+        stamp = int(time.time())
+        db().execute('''INSERT INTO member_invitations
+            (user_id,token_hash,channel,recipient,status,expires_at,last_attempt_at)
+            VALUES(?,?,?,?,'pending',?,?) ON CONFLICT(user_id) DO UPDATE SET
+            token_hash=excluded.token_hash,channel=excluded.channel,recipient=excluded.recipient,
+            status='pending',expires_at=excluded.expires_at,last_attempt_at=excluded.last_attempt_at,provider_id=NULL''',
+            (uid, token_hash, channel, recipient, stamp + 86400, stamp))
+        return token, token_hash
+
+    def deliver_invitation(uid, email, token, token_hash):
+        info = invitation_info(uid)
+        # Fragments keep invitation tokens out of HTTP access logs and referrers.
+        base = portal_url(app.config) if not app.config['DEMO_MODE'] else ''
+        link = base + '/#activate=' + token
+        status, provider_id = 'demo', None
+        message = None
+        if not app.config['DEMO_MODE']:
+            try:
+                provider_id = send_invitation(app.config, info['channel'], info['recipient'], email, link)
+                status = 'accepted'
+            except DeliveryError as exc:
+                status, message = 'failed', str(exc)
+        db().execute('''UPDATE member_invitations SET status=?,provider_id=?
+            WHERE user_id=? AND token_hash=? AND status='pending' ''', (status, provider_id, uid, token_hash))
+        db().commit()
+        result = dict(invitation=invitation_info(uid))
+        if message:
+            result['delivery_error'] = message
+        if app.config['DEMO_MODE']:
+            result['demo_activation_url'] = link
+        return result
+
     def classes_for(start, end, uid):
         rows = db().execute('''SELECT c.*, COUNT(b.id) AS booked,
             MAX(CASE WHEN b.user_id=? THEN b.id END) AS booking_id,
@@ -138,47 +229,70 @@ def create_app(config=None):
 
     @app.get('/health')
     def health():
-        db().execute('SELECT 1')
+        version = db().execute('SELECT COALESCE(MAX(version),0) FROM schema_migrations').fetchone()[0]
+        if version != SCHEMA_VERSION:
+            return jsonify(status='unavailable'), 503
         return jsonify(status='ok')
 
     @app.get('/api/session')
     def get_session():
         session.setdefault('csrf', secrets.token_urlsafe(32))
         row = db().execute('SELECT * FROM users WHERE id=?', (session.get('uid'),)).fetchone()
-        if row and row['is_demo'] and not app.config['DEMO_MODE']:
+        if row and ((row['is_demo'] and not app.config['DEMO_MODE'])
+                    or session.get('version', 0) != row['session_version']):
             row = None
         return jsonify(user=public_user(row) if row else None, csrf=session['csrf'], demo=app.config['DEMO_MODE'], today=now().date().isoformat(), server_now=now().isoformat(), timezone=str(gym_zone))
-
-    attempts = {}
-    attempt_lock = threading.Lock()
 
     @app.post('/api/login')
     def login():
         data = payload()
         email = text(data, 'email', 3, 254).lower()
-        key = request.remote_addr
-        with attempt_lock:
-            recent = [t for t in attempts.get(key, []) if t > time.monotonic() - 300]
-            if len(recent) >= 15:
-                return error('Too many attempts. Please try again in five minutes.', 429)
-            attempts[key] = recent + [time.monotonic()]
-            if len(attempts) > 5000:
-                for old_key in list(attempts):
-                    if not attempts[old_key] or attempts[old_key][-1] < time.monotonic() - 300:
-                        attempts.pop(old_key, None)
+        stamp = int(time.time())
+        allowed = True
+        for prefix, value, maximum in (('account:', email, 15), ('ip:', request.remote_addr or 'unknown', 100)):
+            bucket = hashlib.sha256((prefix + value).encode()).hexdigest()
+            allowed = consume_login_attempt(db(), bucket, maximum, stamp) and allowed
+        db().execute('DELETE FROM login_attempts WHERE window_start<?', (stamp - 86400,))
+        db().commit()
+        if not allowed:
+            return error('Too many attempts. Please try again in five minutes.', 429)
         row = db().execute('SELECT * FROM users WHERE email=?', (email,)).fetchone()
         if not row or not check_password_hash(row['password_hash'], str(data.get('password', ''))):
             return error('Email or password is incorrect.', 401)
         if row['is_demo'] and not app.config['DEMO_MODE']:
             return error('Demo access is disabled.', 403)
         session.clear()
-        session.update(uid=row['id'], csrf=secrets.token_urlsafe(32))
+        session.update(uid=row['id'], version=row['session_version'], csrf=secrets.token_urlsafe(32))
         session.permanent = True
         return jsonify(user=public_user(row), csrf=session['csrf'])
 
     @app.post('/api/logout')
     def logout():
         session.clear()
+        return jsonify(ok=True)
+
+    @app.post('/api/invitations/accept')
+    def accept_invitation():
+        data = payload()
+        token = str(data.get('token', ''))
+        invalid_link = 'Η πρόσκληση έληξε ή δεν είναι έγκυρη. Ζήτησε νέα πρόσκληση από τον προπονητή σου.'
+        if not re.fullmatch(r'[A-Za-z0-9_-]{43}', token):
+            return error(invalid_link, 400)
+        new_password = text(data, 'new_password', 10, 128)
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+        connection = db()
+        connection.begin_write()
+        invite = connection.execute('''SELECT i.* FROM member_invitations i JOIN users u ON u.id=i.user_id
+            WHERE i.token_hash=? AND i.used_at IS NULL AND i.expires_at>?
+            AND (u.is_demo=0 OR ?=1)''', (token_hash, int(time.time()), int(app.config['DEMO_MODE']))).fetchone()
+        if not invite:
+            return error(invalid_link, 400)
+        connection.execute('UPDATE users SET password_hash=?,session_version=session_version+1 WHERE id=?',
+                           (generate_password_hash(new_password), invite['user_id']))
+        connection.execute("UPDATE member_invitations SET token_hash=NULL,used_at=?,status='used' WHERE user_id=?",
+                           (int(time.time()), invite['user_id']))
+        connection.commit()
+        # Activation does not replace an existing session (e.g. an owner preview).
         return jsonify(ok=True)
 
     @app.get('/api/dashboard')
@@ -206,7 +320,7 @@ def create_app(config=None):
             return error('Use a client account to book a class.', 403)
         class_id = number(payload(), 'class_id', 1, 1000000000, True)
         connection = db()
-        connection.execute('BEGIN IMMEDIATE')
+        connection.begin_write()
         cls = connection.execute('SELECT * FROM classes WHERE id=?', (class_id,)).fetchone()
         if not cls:
             return error('This class is no longer available.', 404)
@@ -291,8 +405,9 @@ def create_app(config=None):
         if not check_password_hash(g.user['password_hash'], str(data.get('current_password', ''))):
             return error('Your current password is incorrect.', 403)
         new_password = text(data, 'new_password', 10, 128)
-        db().execute('UPDATE users SET password_hash=? WHERE id=?', (generate_password_hash(new_password), g.user['id']))
+        db().execute('UPDATE users SET password_hash=?,session_version=session_version+1 WHERE id=?', (generate_password_hash(new_password), g.user['id']))
         db().commit()
+        session['version'] = g.user['session_version'] + 1
         return jsonify(ok=True)
 
     @app.get('/api/owner')
@@ -300,6 +415,7 @@ def create_app(config=None):
     def owner():
         users = [dict(r) for r in db().execute("SELECT id,name,email,goal,priority FROM users WHERE role='client' ORDER BY name")]
         for user in users:
+            user['invitation'] = invitation_info(user['id'])
             user['access'] = [dict(r) for r in db().execute('SELECT * FROM access WHERE user_id=? ORDER BY month', (user['id'],))]
             user['bookings'] = db().execute('SELECT COUNT(*) FROM bookings WHERE user_id=?', (user['id'],)).fetchone()[0]
         bookings = [dict(r) for r in db().execute('''SELECT b.*,u.name,u.email,c.title,c.starts_at FROM bookings b JOIN users u ON u.id=b.user_id JOIN classes c ON c.id=b.class_id ORDER BY c.starts_at''')]
@@ -313,13 +429,55 @@ def create_app(config=None):
         email = text(data, 'email', 5, 254).lower()
         if '@' not in email or '.' not in email.rsplit('@', 1)[-1] or any(c.isspace() for c in email):
             return error('Enter a valid email address.')
-        password = text(data, 'password', 10, 128)
+        channel = text(data, 'delivery_channel', 1, 10) if 'delivery_channel' in data else 'email'
+        phone = text(data, 'phone', 0, 16)
         try:
-            cursor = db().execute('INSERT INTO users(name,email,password_hash,role,goal,priority) VALUES(?,?,?,?,?,?)', (name, email, generate_password_hash(password), 'client', text(data, 'goal', 0, 300), text(data, 'priority', 0, 300)))
+            validate_channel(app.config, channel, phone)
+        except DeliveryError as exc:
+            return error(str(exc), 503)
+        goal, priority = text(data, 'goal', 0, 300), text(data, 'priority', 0, 300)
+        try:
+            # Only a password chosen through the invitation can unlock this account.
+            cursor = db().execute('INSERT INTO users(name,email,password_hash,role,goal,priority,is_demo) VALUES(?,?,?,?,?,?,?) RETURNING id',
+                                  (name, email, generate_password_hash(secrets.token_urlsafe(48)), 'client', goal, priority, int(app.config['DEMO_MODE'])))
+            uid = cursor.fetchone()[0]
+            token, token_hash = prepare_invitation(uid, channel, email if channel == 'email' else phone)
             db().commit()
-        except sqlite3.IntegrityError:
+        except INTEGRITY_ERRORS:
+            db().rollback()
             return error('A member with that email already exists.', 409)
-        return jsonify(ok=True, id=cursor.lastrowid), 201
+        # Persist first so an uncertain delivery never loses the member or requires
+        # creating a duplicate. Failures remain visible and can be retried by owner.
+        return jsonify(ok=True, id=uid, **deliver_invitation(uid, email, token, token_hash)), 201
+
+    @app.post('/api/owner/members/<int:uid>/invitation')
+    @auth(owner=True)
+    def resend_invitation(uid):
+        data = payload()
+        member = db().execute("SELECT id,email FROM users WHERE id=? AND role='client'", (uid,)).fetchone()
+        if not member:
+            return error('Member not found.', 404)
+        previous = invitation_info(uid)
+        if not previous or previous['used_at'] is not None:
+            return error('Ο λογαριασμός έχει ήδη ενεργοποιηθεί ή δεν έχει πρόσκληση.', 409)
+        channel = str(data.get('delivery_channel', previous['channel']))
+        phone = text(data, 'phone', 0, 16) if 'phone' in data else (
+            previous['recipient'] if previous['channel'] == 'sms' else '')
+        try:
+            validate_channel(app.config, channel, phone)
+        except DeliveryError as exc:
+            return error(str(exc), 503)
+        connection = db()
+        connection.begin_write()
+        # Recheck inside the transaction: activation or another resend may race us.
+        current = connection.execute('SELECT * FROM member_invitations WHERE user_id=?', (uid,)).fetchone()
+        if current['used_at'] is not None:
+            return error('Ο λογαριασμός έχει ήδη ενεργοποιηθεί.', 409)
+        if current['last_attempt_at'] > time.time() - 60:
+            return error('Περίμενε ένα λεπτό πριν στείλεις ξανά πρόσκληση.', 429)
+        token, token_hash = prepare_invitation(uid, channel, member['email'] if channel == 'email' else phone)
+        connection.commit()
+        return jsonify(ok=True, **deliver_invitation(uid, member['email'], token, token_hash))
 
     @app.put('/api/owner/members/<int:uid>/access')
     @auth(owner=True)
@@ -363,7 +521,7 @@ def create_app(config=None):
             return error('Choose a valid class category.')
         values = (title, starts.isoformat(timespec='minutes'), duration, capacity, category, text(data, 'coach', 2, 80), text(data, 'description', 5, 800), text(data, 'warmup', 3, 800), text(data, 'main', 3, 1600), text(data, 'finisher', 3, 800))
         connection = db()
-        connection.execute('BEGIN IMMEDIATE')
+        connection.begin_write()
         if class_id:
             old = connection.execute('SELECT * FROM classes WHERE id=?', (class_id,)).fetchone()
             if not old:
@@ -403,31 +561,29 @@ def create_app(config=None):
         db().commit()
         return jsonify(ok=True)
 
-    Path(app.config['DATABASE']).parent.mkdir(parents=True, exist_ok=True)
-    with app.app_context():
-        db().executescript('''
-            PRAGMA journal_mode=WAL;
-            CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY,name TEXT NOT NULL,email TEXT NOT NULL UNIQUE,password_hash TEXT NOT NULL,role TEXT NOT NULL CHECK(role IN ('owner','client')),goal TEXT NOT NULL DEFAULT '',priority TEXT NOT NULL DEFAULT '',is_demo INTEGER NOT NULL DEFAULT 0);
-            CREATE TABLE IF NOT EXISTS access(user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,month TEXT NOT NULL,weekly_limit INTEGER NOT NULL CHECK(weekly_limit>0),PRIMARY KEY(user_id,month));
-            CREATE TABLE IF NOT EXISTS classes(id INTEGER PRIMARY KEY,title TEXT NOT NULL,starts_at TEXT NOT NULL,duration INTEGER NOT NULL,capacity INTEGER NOT NULL CHECK(capacity>0),category TEXT NOT NULL,coach TEXT NOT NULL,description TEXT NOT NULL,warmup TEXT NOT NULL,main TEXT NOT NULL,finisher TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS bookings(id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,class_id INTEGER NOT NULL REFERENCES classes(id) ON DELETE CASCADE,attended INTEGER NOT NULL DEFAULT 0,UNIQUE(user_id,class_id));
-            CREATE TABLE IF NOT EXISTS progress(id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,logged_on TEXT NOT NULL,kind TEXT NOT NULL,exercise TEXT NOT NULL,weight REAL NOT NULL,reps INTEGER,note TEXT NOT NULL DEFAULT '');
-            CREATE INDEX IF NOT EXISTS classes_start ON classes(starts_at);
-            CREATE INDEX IF NOT EXISTS bookings_class ON bookings(class_id);
-            CREATE INDEX IF NOT EXISTS progress_user ON progress(user_id,logged_on);
-        ''')
-        if not db().execute('SELECT 1 FROM users LIMIT 1').fetchone():
+    def initialize_database():
+        with app.app_context():
+            migrate(db())
+            if production and db().execute('SELECT 1 FROM users WHERE is_demo=1 LIMIT 1').fetchone():
+                raise RuntimeError('Production must use a clean live database, without demo accounts.')
+            if not db().execute('SELECT 1 FROM users LIMIT 1').fetchone():
+                if app.config['DEMO_MODE']:
+                    seed_demo(db(), now())
+                else:
+                    owner_email = os.getenv('OWNER_EMAIL', '').strip().lower()
+                    owner_password = os.getenv('OWNER_PASSWORD', '')
+                    if ('@' not in owner_email or '.' not in owner_email.rsplit('@', 1)[-1]
+                            or any(c.isspace() for c in owner_email) or len(owner_password) < 12):
+                        raise RuntimeError('With DEMO_MODE=false, set OWNER_EMAIL and OWNER_PASSWORD (12+ characters) for the first owner.')
+                    db().execute("INSERT INTO users(name,email,password_hash,role) VALUES(?,?,?,'owner')", (os.getenv('OWNER_NAME', 'Studio owner'), owner_email, generate_password_hash(owner_password)))
+                    db().commit()
             if app.config['DEMO_MODE']:
-                seed_demo(db(), now())
-            else:
-                owner_email = os.getenv('OWNER_EMAIL', '').strip().lower()
-                owner_password = os.getenv('OWNER_PASSWORD', '')
-                if not owner_email or len(owner_password) < 12:
-                    raise RuntimeError('With DEMO_MODE=false, set OWNER_EMAIL and OWNER_PASSWORD (12+ characters) for the first owner.')
-                db().execute("INSERT INTO users(name,email,password_hash,role) VALUES(?,?,?,'owner')", (os.getenv('OWNER_NAME', 'Studio owner'), owner_email, generate_password_hash(owner_password)))
-                db().commit()
-        if app.config['DEMO_MODE']:
-            localize_demo(db())
+                localize_demo(db())
+            db().commit()
+
+    app.extensions['initialize_database'] = initialize_database
+    if app.config['AUTO_MIGRATE']:
+        initialize_database()
     return app
 
 
@@ -455,13 +611,14 @@ def seed_demo(connection, now):
         for slot_index, slot in enumerate(slots):
             plan = plans[(day.weekday() + slot_index) % len(plans)]
             title, category, desc, warmup, main, finisher = plan
-            cursor = connection.execute('INSERT INTO classes(title,starts_at,duration,capacity,category,coach,description,warmup,main,finisher) VALUES(?,?,?,?,?,?,?,?,?,?)', (title, f'{day.isoformat()}T{slot}', 50, 6 if slot_index != 2 else 4, category, 'Jamie' if slot_index != 1 else 'Taylor', desc, warmup, main, finisher))
+            cursor = connection.execute('INSERT INTO classes(title,starts_at,duration,capacity,category,coach,description,warmup,main,finisher) VALUES(?,?,?,?,?,?,?,?,?,?) RETURNING id', (title, f'{day.isoformat()}T{slot}', 50, 6 if slot_index != 2 else 4, category, 'Jamie' if slot_index != 1 else 'Taylor', desc, warmup, main, finisher))
+            seeded_class_id = cursor.fetchone()[0]
             member_days = {3: ((0, 2, 4), 0), 4: ((1, 3), 1), 5: ((0, 2, 4), 1), 6: ((1, 4, 5), 0)}
             for uid, (training_days, preferred_slot) in member_days.items():
                 if day.weekday() in training_days and slot_index == preferred_slot:
-                    connection.execute('INSERT INTO bookings(user_id,class_id,attended) VALUES(?,?,?)', (uid, cursor.lastrowid, int(day < now.date())))
+                    connection.execute('INSERT INTO bookings(user_id,class_id,attended) VALUES(?,?,?)', (uid, seeded_class_id, int(day < now.date())))
             if day.weekday() in (0, 2, 4) and slot_index == 0 and day < now.date() and day >= monday - timedelta(days=14) and (day < monday or day.weekday() == 0):
-                connection.execute('INSERT INTO bookings(user_id,class_id,attended) VALUES(1,?,1)', (cursor.lastrowid,))
+                connection.execute('INSERT INTO bookings(user_id,class_id,attended) VALUES(1,?,1)', (seeded_class_id,))
     next_class = connection.execute('SELECT c.id FROM classes c LEFT JOIN bookings b ON b.class_id=c.id WHERE c.starts_at>? GROUP BY c.id HAVING COUNT(b.id)<c.capacity ORDER BY c.starts_at LIMIT 1', (now.isoformat(),)).fetchone()
     if next_class:
         connection.execute('INSERT INTO bookings(user_id,class_id) VALUES(1,?)', (next_class[0],))

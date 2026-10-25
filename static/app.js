@@ -220,7 +220,7 @@ function renderProgress() {
 }
 
 function renderProfile() {
-  return `${pageHeading('Ο ΧΩΡΟΣ ΣΟΥ, Η ΙΣΤΟΡΙΑ ΣΟΥ', isOwner() ? 'Καλώς ήρθες, κόουτς<span class="green-dot">.</span>' : 'Λίγα λόγια για σένα<span class="green-dot">.</span>', 'Κράτα ενημερωμένα τα στοιχεία και τις προτεραιότητές σου.')}<div class="profile-grid"><section class="panel profile-panel"><div class="profile-avatar">${esc(initials(state.user.name))}</div><h2>${esc(state.user.name)}</h2><p>${esc(state.user.email)}</p><span class="tag mint">${isOwner() ? 'ΙΔΙΟΚΤΗΤΗΣ' : 'ΜΕΛΟΣ'}</span>${!isOwner() ? '<p class="small muted">Ο προπονητής διαχειρίζεται την πρόσβαση της συνδρομής σου. Για αλλαγές, επικοινώνησε με τον χώρο.</p>' : ''}</section><section class="panel form-panel"><h2>Τα στοιχεία σου</h2><form id="profile-form"><label>Το όνομά σου<input name="name" value="${esc(state.user.name)}" minlength="2" maxlength="80" required autocomplete="name"></label><label>Ο στόχος σου<textarea name="goal" maxlength="300" rows="3" placeholder="Τι θα ήθελες να πετύχεις;">${esc(state.user.goal)}</textarea></label><label>Πού θέλεις να εστιάσεις<textarea name="priority" maxlength="300" rows="3" placeholder="Συνέπεια, μια άσκηση, κινητικότητα — ό,τι χρειάζεσαι.">${esc(state.user.priority)}</textarea></label><div class="form-error" role="alert"></div><button class="btn dark" type="submit">Αποθήκευση στοιχείων ${icon('check')}</button></form></section><section class="panel form-panel password-panel"><h2>Αλλαγή κωδικού</h2><p class="small muted">Χρησιμοποίησε τουλάχιστον 10 χαρακτήρες. Αν είσαι νέο μέλος, άλλαξε τον προσωρινό κωδικό που έδωσε ο προπονητής.</p><form id="password-form"><label>Τρέχων κωδικός<input name="current_password" type="password" autocomplete="current-password" required></label><label>Νέος κωδικός<input name="new_password" type="password" minlength="10" maxlength="128" autocomplete="new-password" required></label><div class="form-error" role="alert"></div><button type="submit" class="btn outline">Ενημέρωση κωδικού ${icon('lock')}</button></form></section></div>`;
+  return `${pageHeading('Ο ΧΩΡΟΣ ΣΟΥ, Η ΙΣΤΟΡΙΑ ΣΟΥ', isOwner() ? 'Καλώς ήρθες, κόουτς<span class="green-dot">.</span>' : 'Λίγα λόγια για σένα<span class="green-dot">.</span>', 'Κράτα ενημερωμένα τα στοιχεία και τις προτεραιότητές σου.')}<div class="profile-grid"><section class="panel profile-panel"><div class="profile-avatar">${esc(initials(state.user.name))}</div><h2>${esc(state.user.name)}</h2><p>${esc(state.user.email)}</p><span class="tag mint">${isOwner() ? 'ΙΔΙΟΚΤΗΤΗΣ' : 'ΜΕΛΟΣ'}</span>${!isOwner() ? '<p class="small muted">Ο προπονητής διαχειρίζεται την πρόσβαση της συνδρομής σου. Για αλλαγές, επικοινώνησε με τον χώρο.</p>' : ''}</section><section class="panel form-panel"><h2>Τα στοιχεία σου</h2><form id="profile-form"><label>Το όνομά σου<input name="name" value="${esc(state.user.name)}" minlength="2" maxlength="80" required autocomplete="name"></label><label>Ο στόχος σου<textarea name="goal" maxlength="300" rows="3" placeholder="Τι θα ήθελες να πετύχεις;">${esc(state.user.goal)}</textarea></label><label>Πού θέλεις να εστιάσεις<textarea name="priority" maxlength="300" rows="3" placeholder="Συνέπεια, μια άσκηση, κινητικότητα — ό,τι χρειάζεσαι.">${esc(state.user.priority)}</textarea></label><div class="form-error" role="alert"></div><button class="btn dark" type="submit">Αποθήκευση στοιχείων ${icon('check')}</button></form></section><section class="panel form-panel password-panel"><h2>Αλλαγή κωδικού</h2><p class="small muted">Χρησιμοποίησε τουλάχιστον 10 χαρακτήρες και έναν κωδικό που δεν χρησιμοποιείς αλλού.</p><form id="password-form"><label>Τρέχων κωδικός<input name="current_password" type="password" autocomplete="current-password" required></label><label>Νέος κωδικός<input name="new_password" type="password" minlength="10" maxlength="128" autocomplete="new-password" required></label><div class="form-error" role="alert"></div><button type="submit" class="btn outline">Ενημέρωση κωδικού ${icon('lock')}</button></form></section></div>`;
 }
 
 function renderOverview() {
@@ -265,7 +265,15 @@ function bindApp() {
     document.querySelectorAll('[data-member-row]').forEach(row => { const visible = row.dataset.memberRow.includes(query); row.hidden = !visible; if (visible) count++; });
     $('#no-member-results').classList.toggle('hidden', count > 0);
   };
-  document.querySelectorAll('[data-member]').forEach(b => b.onclick = () => accessForm(Number(b.dataset.member)));
+  document.querySelectorAll('[data-member]').forEach(b => {
+    const member = state.owner.members.find(m => m.id === Number(b.dataset.member));
+    b.onclick = () => accessForm(member.id);
+    if (member.invitation) {
+      const status = document.createElement('small');
+      status.textContent = invitationLabel(member.invitation);
+      $('.member-cell > span:last-child', b.closest('tr')).append(status);
+    }
+  });
   document.querySelectorAll('[data-delete-log]').forEach(b => b.onclick = () => confirmAction('Διαγραφή καταγραφής;', 'Αυτή η καταγραφή θα διαγραφεί οριστικά από το ημερολόγιό σου.', async () => { await api('/progress/' + b.dataset.deleteLog, { method: 'DELETE' }); await refresh(); toast('Η καταγραφή διαγράφηκε.'); }));
   if ($('#profile-form')) bindForm($('#profile-form'), async data => { await api('/profile', { method: 'PUT', body: data }); await refresh(); toast('Τα στοιχεία σου ενημερώθηκαν.'); });
   if ($('#password-form')) bindForm($('#password-form'), async data => { await api('/password', { method: 'PUT', body: data }); $('#password-form').reset(); toast('Ο κωδικός ενημερώθηκε.'); });
@@ -352,14 +360,47 @@ function progressForm() {
 }
 
 function memberForm() {
-  modal('Καλωσόρισε ένα νέο μέλος.', `<form id="member-form"><label>Ονοματεπώνυμο<input name="name" minlength="2" maxlength="80" autocomplete="name" placeholder="π.χ. Αλέξανδρος Δημητρίου" required></label><label>Διεύθυνση email<input name="email" type="email" maxlength="254" autocomplete="email" placeholder="alex@example.com" required></label><label>Προσωρινός κωδικός<input name="password" type="text" minlength="10" maxlength="128" autocomplete="off" placeholder="Τουλάχιστον 10 χαρακτήρες" required></label><p class="small muted">Δώσε απευθείας τα στοιχεία σύνδεσης στο μέλος. Μπορεί να αλλάξει τον κωδικό από το προφίλ του. Δεν αποστέλλεται αυτόματα email.</p><label>Προπονητικός στόχος <span class="optional">προαιρετικό</span><textarea name="goal" rows="2" maxlength="300" placeholder="Τι θα ήθελε να πετύχει;"></textarea></label><label>Προπονητική προτεραιότητα <span class="optional">προαιρετικό</span><input name="priority" maxlength="300" placeholder="π.χ. Τεχνική και συνέπεια"></label><div class="form-error" role="alert"></div><button type="submit" class="btn dark full">Δημιουργία και ορισμός πρόσβασης ${icon('arrow')}</button></form>`, 'Δημιούργησε τον λογαριασμό και διάλεξε τους μήνες συνδρομής.');
-  bindForm($('#member-form'), async data => { const result = await api('/owner/members', { method: 'POST', body: data }); await refresh(); accessForm(result.id); toast('Το μέλος δημιουργήθηκε. Όρισε τώρα την πρόσβασή του.'); });
+  modal('Καλωσόρισε ένα νέο μέλος.', `<form id="member-form"><label>Ονοματεπώνυμο<input name="name" minlength="2" maxlength="80" autocomplete="name" placeholder="π.χ. Αλέξανδρος Δημητρίου" required></label><label>Διεύθυνση email<input name="email" type="email" maxlength="254" autocomplete="email" placeholder="alex@example.com" required></label><p class="small muted">Το email είναι το όνομα σύνδεσης, ακόμη και με αποστολή SMS.</p>${deliveryFields()}<p class="small muted">Το μέλος θα λάβει το email σύνδεσης και σύνδεσμο για να ορίσει τον δικό του κωδικό. Ο σύνδεσμος ισχύει για 24 ώρες.${state.demo ? ' Στη δοκιμή δεν αποστέλλονται μηνύματα· μπορείς να ανοίξεις προεπισκόπηση.' : ''}</p><label>Προπονητικός στόχος <span class="optional">προαιρετικό</span><textarea name="goal" rows="2" maxlength="300" placeholder="Τι θα ήθελε να πετύχει;"></textarea></label><label>Προπονητική προτεραιότητα <span class="optional">προαιρετικό</span><input name="priority" maxlength="300" placeholder="π.χ. Τεχνική και συνέπεια"></label><div class="form-error" role="alert"></div><button type="submit" class="btn dark full">Δημιουργία και πρόσκληση ${icon('arrow')}</button></form>`, 'Δημιούργησε τον λογαριασμό και διάλεξε τους μήνες συνδρομής.');
+  bindDeliveryFields($('#member-form'));
+  bindForm($('#member-form'), async data => { const result = await api('/owner/members', { method: 'POST', body: data }); await refresh(); accessForm(result.id, result); toast(result.delivery_error ? 'Το μέλος δημιουργήθηκε, αλλά η αποστολή δεν επιβεβαιώθηκε. Δες την πρόσκληση.' : 'Το μέλος δημιουργήθηκε. Όρισε τώρα την πρόσβασή του.', !!result.delivery_error); });
 }
 
-function accessForm(uid) {
+function deliveryFields(channel = 'email', phone = '') {
+  return `<label>Αποστολή πρόσκλησης<select name="delivery_channel"><option value="email" ${channel === 'email' ? 'selected' : ''}>Email</option><option value="sms" ${channel === 'sms' ? 'selected' : ''}>SMS</option></select></label><label data-phone-field ${channel === 'sms' ? '' : 'hidden'}>Κινητό με κωδικό χώρας<input name="phone" type="tel" autocomplete="tel" maxlength="16" pattern="[+][1-9][0-9]{7,14}" placeholder="+35799123456" value="${esc(phone)}" ${channel === 'sms' ? 'required' : 'disabled'}></label>`;
+}
+
+function bindDeliveryFields(form) {
+  $('[name=delivery_channel]', form).onchange = e => {
+    const sms = e.target.value === 'sms';
+    $('[data-phone-field]', form).hidden = !sms;
+    $('[name=phone]', form).required = sms;
+    $('[name=phone]', form).disabled = !sms;
+  };
+}
+
+function invitationLabel(invite) {
+  if (!invite) return '';
+  return ({ demo: 'Δοκιμαστική πρόσκληση · χωρίς αποστολή', pending: 'Η αποστολή δεν έχει επιβεβαιωθεί', accepted: 'Υποβλήθηκε για αποστολή · αναμονή ενεργοποίησης', failed: 'Η αποστολή δεν επιβεβαιώθηκε · ξαναστείλε πρόσκληση', expired: 'Η πρόσκληση έληξε · ξαναστείλε πρόσκληση', used: 'Ο λογαριασμός ενεργοποιήθηκε' })[invite.status] || 'Αναμονή ενεργοποίησης';
+}
+
+function invitationPanel(member, result) {
+  const invite = member.invitation;
+  if (!invite) return '';
+  return `<section class="invitation-panel"><h3>Πρόσκληση μέλους</h3><p role="status">${esc(invitationLabel(invite))}</p><p class="small muted">${invite.channel === 'sms' ? 'SMS' : 'Email'} · ${esc(invite.recipient)}</p>${result?.delivery_error ? `<p class="form-error" role="alert">${esc(result.delivery_error)}</p>` : ''}${result?.demo_activation_url ? `<a class="btn outline small" href="${esc(result.demo_activation_url)}" target="_blank" rel="noopener">Προεπισκόπηση ενεργοποίησης ${icon('arrow')}</a>` : ''}${invite.used_at === null ? `<form id="invitation-form">${deliveryFields(invite.channel, invite.channel === 'sms' ? invite.recipient : '')}<p class="small muted">Η νέα πρόσκληση ακυρώνει τον προηγούμενο σύνδεσμο. Μπορείς να ξαναστείλεις μετά από ένα λεπτό.</p><div class="form-error" role="alert"></div><button class="btn outline small" type="submit">Νέα αποστολή πρόσκλησης ${icon('arrow')}</button></form>` : ''}</section>`;
+}
+
+function accessForm(uid, deliveryResult = null) {
   const member = state.owner.members.find(m => m.id === uid);
   modal('Συνδρομή: ' + esc(member.name) + '.', `<div class="member-modal-card"><span class="avatar">${esc(initials(member.name))}</span><div><strong>${esc(member.name)}</strong><small>${esc(member.email)}</small></div></div>${member.goal ? `<p class="small muted">Στόχος: ${esc(member.goal)}</p>` : ''}${member.priority ? `<p class="small muted">Προτεραιότητα: ${esc(member.priority)}</p>` : ''}<h3 class="modal-section-title">Μήνες συνδρομής</h3><div class="access-list">${member.access.map(a => `<div><div><strong>${monthName(a.month)}</strong><small>${a.weekly_limit} κρατήσεις ανά εβδομάδα</small></div><button class="icon-btn" data-revoke="${a.month}" aria-label="Αφαίρεση πρόσβασης για ${monthName(a.month)}">${icon('trash')}</button></div>`).join('') || '<p class="small muted">Δεν υπάρχουν ενεργοί μήνες. Πρόσθεσε τον πρώτο παρακάτω.</p>'}</div><form id="access-form"><h3 class="modal-section-title">Προσθήκη ή αλλαγή πρόσβασης</h3><label>Μήνας έναρξης<input name="month" type="month" value="${state.today.slice(0, 7)}" required></label><div class="form-row"><label>Αριθμός μηνών<input name="months" type="number" value="1" min="1" max="12" required></label><label>Κρατήσεις ανά εβδομάδα<input name="weekly_limit" type="number" value="3" min="1" max="21" required></label></div><p class="small muted">Η πρόσβαση καλύπτει τους επιλεγμένους μήνες. Οι υπάρχοντες μήνες ενημερώνονται με το νέο όριο. Οι υπάρχουσες κρατήσεις διατηρούνται αν μειωθεί το όριο.</p><div class="form-error" role="alert"></div><button type="submit" class="btn dark full">Αποθήκευση πρόσβασης ${icon('check')}</button></form>`);
-  bindForm($('#access-form'), async data => { await api('/owner/members/' + uid + '/access', { method: 'PUT', body: data }); await refresh(); accessForm(uid); toast('Η πρόσβαση της συνδρομής ενημερώθηκε.'); });
+  $('.member-modal-card').insertAdjacentHTML('afterend', invitationPanel(member, deliveryResult));
+  if ($('#invitation-form')) {
+    bindDeliveryFields($('#invitation-form'));
+    bindForm($('#invitation-form'), async data => {
+      const result = await api('/owner/members/' + uid + '/invitation', { method: 'POST', body: data });
+      await refresh(); accessForm(uid, result);
+    });
+  }
+  bindForm($('#access-form'), async data => { await api('/owner/members/' + uid + '/access', { method: 'PUT', body: data }); await refresh(); accessForm(uid, deliveryResult); toast('Η πρόσβαση της συνδρομής ενημερώθηκε.'); });
   document.querySelectorAll('[data-revoke]').forEach(b => b.onclick = () => confirmAction('Αφαίρεση πρόσβασης για αυτόν τον μήνα;', `Η πρόσβαση για ${monthName(b.dataset.revoke)} και όλες οι μελλοντικές κρατήσεις αυτού του μήνα θα αφαιρεθούν για το μέλος ${member.name}.`, async () => { await api(`/owner/members/${uid}/access/${b.dataset.revoke}`, { method: 'DELETE' }); await refresh(); toast('Η πρόσβαση αφαιρέθηκε και οι μελλοντικές θέσεις ελευθερώθηκαν.'); }));
 }
 
@@ -369,10 +410,31 @@ function classForm(c = null) {
   bindForm($('#class-form'), async data => { await api('/owner/classes' + (c ? '/' + c.id : ''), { method: c ? 'PUT' : 'POST', body: data }); state.month = data.starts_at.slice(0, 7); state.day = data.starts_at.slice(0, 10); state.week = monday(state.day); await refresh(); closeModal(); toast(c ? 'Το μάθημα ενημερώθηκε.' : 'Η προπόνηση προστέθηκε στο πρόγραμμα.'); });
 }
 
+function renderActivation(token) {
+  closeModal();
+  app.innerHTML = `<main class="activation-page"><section class="login-card"><div class="login-card-top">${logo()}</div><h1>Καλώς ήρθες στην παρέα.</h1><p>Διάλεξε τον προσωπικό σου κωδικό για να ενεργοποιήσεις τον λογαριασμό σου.</p><form id="activation-form"><label>Νέος κωδικός<input name="new_password" type="password" minlength="10" maxlength="128" autocomplete="new-password" required></label><label>Επανάληψη κωδικού<input name="confirm_password" type="password" minlength="10" maxlength="128" autocomplete="new-password" required></label><p class="small muted">Τουλάχιστον 10 χαρακτήρες. Αν ο σύνδεσμος έληξε, ζήτησε νέα πρόσκληση από τον προπονητή σου.</p><div class="form-error" role="alert"></div><button class="btn dark full" type="submit">Ενεργοποίηση λογαριασμού ${icon('arrow')}</button></form></section></main>`;
+  bindForm($('#activation-form'), async data => {
+    if (data.new_password !== data.confirm_password) throw new Error('Οι κωδικοί δεν ταιριάζουν.');
+    await api('/invitations/accept', { method: 'POST', body: { token, new_password: data.new_password } });
+    app.innerHTML = `<main class="activation-page"><section class="login-card"><div class="login-card-top">${logo()}</div><h1>Ο λογαριασμός σου είναι έτοιμος.</h1><p>Συνδέσου με το email της πρόσκλησης και τον κωδικό που μόλις όρισες.</p><a class="btn dark full" href="/">Μετάβαση στη σύνδεση ${icon('arrow')}</a></section></main>`;
+  });
+}
+
+function openInvitationFromLocation() {
+  const token = new URLSearchParams(location.hash.slice(1)).get('activate');
+  if (!token) return false;
+  history.replaceState(null, '', location.pathname + location.search);
+  renderActivation(token);
+  return true;
+}
+
+window.addEventListener('hashchange', () => { if (state.csrf) openInvitationFromLocation(); });
+
 async function init() {
   try {
     const result = await api('/session');
     Object.assign(state, { user: result.user, csrf: result.csrf, demo: result.demo, today: result.today, timezone: result.timezone, month: result.today.slice(0, 7), week: monday(result.today), day: result.today });
+    if (openInvitationFromLocation()) return;
     if (state.user) { state.page = isOwner() ? 'overview' : 'schedule'; await loadData(); selectNextDay(); renderApp(); }
     else renderLanding();
   } catch (e) { app.innerHTML = `<div class="boot">${logo()}<h2>Δεν μπορέσαμε να ανοίξουμε τον χώρο σου.</h2><p>${esc(e.message)}</p><button class="btn dark" id="retry-init">Δοκίμασε ξανά</button></div>`; $('#retry-init').onclick = init; }

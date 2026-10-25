@@ -14,7 +14,7 @@ class PortalTests(unittest.TestCase):
     def setUp(self):
         self.folder = tempfile.TemporaryDirectory()
         self.path = os.path.join(self.folder.name, 'test.sqlite3')
-        self.app = create_app({'TESTING': True, 'DATABASE': self.path, 'SECRET_KEY': 'test-only', 'DEMO_MODE': True})
+        self.app = create_app(self.app_config())
         self.client = self.signed_in('client@form.demo')
         self.owner = self.signed_in('owner@form.demo')
         # A clean future week, independent of the seeded demo schedule.
@@ -25,11 +25,17 @@ class PortalTests(unittest.TestCase):
         if self.start.day > 25:
             self.start += timedelta(days=7)
         self.month = self.start.strftime('%Y-%m')
-        with closing(sqlite3.connect(self.path)) as db, db:
+        with closing(self.connect_db()) as db, db:
             db.execute('DELETE FROM bookings')
             db.execute('DELETE FROM classes')
-            db.execute('INSERT OR REPLACE INTO access VALUES(1,?,2)', (self.month,))
-            db.execute('INSERT OR REPLACE INTO access VALUES(3,?,3)', (self.month,))
+            db.execute('INSERT INTO access VALUES(1,?,2) ON CONFLICT(user_id,month) DO UPDATE SET weekly_limit=excluded.weekly_limit', (self.month,))
+            db.execute('INSERT INTO access VALUES(3,?,3) ON CONFLICT(user_id,month) DO UPDATE SET weekly_limit=excluded.weekly_limit', (self.month,))
+
+    def app_config(self):
+        return {'TESTING': True, 'DATABASE': self.path, 'DATABASE_URL': '', 'SECRET_KEY': 'test-only', 'DEMO_MODE': True}
+
+    def connect_db(self):
+        return sqlite3.connect(self.path)
 
     def tearDown(self):
         self.folder.cleanup()
@@ -51,7 +57,7 @@ class PortalTests(unittest.TestCase):
         data = dict(title='Test strength', starts_at=start.isoformat(timespec='minutes'), duration=50, capacity=capacity, category='Strength', coach='Jamie', description='A focused training session.', warmup='Easy row and mobility', main='Squat 4 x 6', finisher='Gentle stretch')
         result = self.mutate(self.owner, '/owner/classes', data)
         self.assertEqual(result.status_code, 200, result.json)
-        with closing(sqlite3.connect(self.path)) as db, db:
+        with closing(self.connect_db()) as db, db:
             return db.execute('SELECT MAX(id) FROM classes').fetchone()[0]
 
     def book(self, cls, client=None):
@@ -90,7 +96,7 @@ class PortalTests(unittest.TestCase):
         with ThreadPoolExecutor(max_workers=2) as executor:
             codes = list(executor.map(lambda client: self.book(cls, client).status_code, clients))
         self.assertEqual(sorted(codes), [201, 409])
-        with closing(sqlite3.connect(self.path)) as db, db:
+        with closing(self.connect_db()) as db, db:
             self.assertEqual(db.execute('SELECT COUNT(*) FROM bookings WHERE class_id=?', (cls,)).fetchone()[0], 1)
 
     def test_overlapping_classes_are_rejected(self):
@@ -164,9 +170,9 @@ class PortalTests(unittest.TestCase):
     def test_greek_demo_migration_preserves_bookings_and_custom_content(self):
         cls = self.new_class()
         self.assertEqual(self.book(cls).status_code, 201)
-        with closing(sqlite3.connect(self.path)) as connection, connection:
+        with closing(self.connect_db()) as connection, connection:
             connection.row_factory = sqlite3.Row
-            before = [tuple(row) for row in connection.execute('SELECT * FROM bookings')]
+            before = [dict(row) for row in connection.execute('SELECT * FROM bookings')]
             connection.execute("DELETE FROM app_settings WHERE key='demo_locale'")
             connection.execute("UPDATE users SET goal='Ο δικός μου στόχος' WHERE id=1")
             connection.execute("UPDATE classes SET title='Engine room',coach='Jamie',description='Find your pace with a coach-led mix of cardio and functional strength.',main='Το δικό μου πρόγραμμα' WHERE id=?",(cls,))
@@ -176,9 +182,9 @@ class PortalTests(unittest.TestCase):
             self.assertEqual(row['coach'],'Γιάννης')
             self.assertEqual(row['main'],'Το δικό μου πρόγραμμα')
             self.assertEqual(connection.execute('SELECT goal FROM users WHERE id=1').fetchone()[0],'Ο δικός μου στόχος')
-            self.assertEqual(before,[tuple(row) for row in connection.execute('SELECT * FROM bookings')])
+            self.assertEqual(before,[dict(row) for row in connection.execute('SELECT * FROM bookings')])
             localize_demo(connection)
-            self.assertEqual(before,[tuple(row) for row in connection.execute('SELECT * FROM bookings')])
+            self.assertEqual(before,[dict(row) for row in connection.execute('SELECT * FROM bookings')])
 
 if __name__ == '__main__':
     unittest.main()
