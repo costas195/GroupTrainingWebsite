@@ -60,6 +60,15 @@ class PortalTests(unittest.TestCase):
         with closing(self.connect_db()) as db, db:
             return db.execute('SELECT MAX(id) FROM classes').fetchone()[0]
 
+    def new_series(self, weekday=None, starts_time='18:00'):
+        data = dict(title='Weekly strength', weekday=self.start.weekday() if weekday is None else weekday,
+                    starts_time=starts_time, duration=50, capacity=6, category='Strength', coach='Jamie',
+                    description='A focused weekly session.', warmup='Easy row and mobility',
+                    main='Squat 4 x 6', finisher='Gentle stretch')
+        result = self.mutate(self.owner, '/owner/class-series', data)
+        self.assertEqual(result.status_code, 201, result.json)
+        return result.json['id']
+
     def book(self, cls, client=None):
         return self.mutate(client or self.client, '/bookings', {'class_id': cls})
 
@@ -124,6 +133,19 @@ class PortalTests(unittest.TestCase):
         with closing(self.connect_db()) as db:
             starts = db.execute('SELECT starts_at FROM classes WHERE id IN (?,?) ORDER BY id', (first, second)).fetchall()
         self.assertEqual(starts[0], starts[1])
+
+    def test_weekly_series_materializes_once_and_cancelled_occurrence_stays_cancelled(self):
+        series_id = self.new_series()
+        first = self.owner.get('/api/dashboard?month=' + self.month).json['classes']
+        repeated = self.owner.get('/api/dashboard?month=' + self.month).json['classes']
+        occurrences = [item for item in first if item['series_id'] == series_id]
+        self.assertGreaterEqual(len(occurrences), 4)
+        self.assertEqual(len(occurrences), len([item for item in repeated if item['series_id'] == series_id]))
+        cancelled = occurrences[0]
+        self.assertEqual(self.mutate(self.owner, f"/owner/classes/{cancelled['id']}", method='DELETE').status_code, 200)
+        after = self.owner.get('/api/dashboard?month=' + self.month).json['classes']
+        self.assertNotIn(cancelled['id'], [item['id'] for item in after])
+        self.assertEqual(self.mutate(self.owner, f'/owner/class-series/{series_id}', method='DELETE').status_code, 200)
 
     def test_revoke_releases_future_places(self):
         cls = self.new_class()

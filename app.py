@@ -291,6 +291,28 @@ def create_app(config=None):
             (uid, uid, start, end)).fetchall()
         return [dict(row) for row in rows]
 
+    def materialize_series(first, end):
+        connection = db()
+        series = connection.execute('SELECT * FROM class_series WHERE active=1 AND starts_on<?', (end.isoformat(),)).fetchall()
+        if not series:
+            return
+        connection.begin_write()
+        for rule in series:
+            day = max(first, date.fromisoformat(rule['starts_on']))
+            day += timedelta(days=(rule['weekday'] - day.weekday()) % 7)
+            while day < end:
+                occurrence = day.isoformat()
+                if not connection.execute('SELECT 1 FROM class_series_exceptions WHERE series_id=? AND occurrence_date=?',
+                                          (rule['id'], occurrence)).fetchone():
+                    connection.execute('''INSERT INTO classes
+                        (title,starts_at,duration,capacity,category,coach,description,warmup,main,finisher,series_id,occurrence_date)
+                        VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(series_id,occurrence_date) DO NOTHING''',
+                        (rule['title'], f"{occurrence}T{rule['starts_time']}", rule['duration'], rule['capacity'],
+                         rule['category'], rule['coach'], rule['description'], rule['warmup'], rule['main'],
+                         rule['finisher'], rule['id'], occurrence))
+                day += timedelta(days=7)
+        connection.commit()
+
     @app.get('/')
     def index():
         return render_template('index.html')
@@ -381,6 +403,7 @@ def create_app(config=None):
         except ValueError:
             return error('Choose a valid month.')
         end = (first.replace(day=28) + timedelta(days=4)).replace(day=1)
+        materialize_series(first, end)
         access = [dict(r) for r in db().execute('SELECT * FROM access WHERE user_id=? ORDER BY month', (user['id'],))]
         allowed = user['role'] == 'owner' or any(a['month'] == month for a in access)
         classes = classes_for(first.isoformat(), end.isoformat(), user['id']) if allowed else []
@@ -680,13 +703,59 @@ def create_app(config=None):
         connection.commit()
         return jsonify(ok=True)
 
+    @app.post('/api/owner/class-series')
+    @auth(owner=True)
+    def create_class_series():
+        data = payload()
+        weekday = number(data, 'weekday', 0, 6, True)
+        starts_time = text(data, 'starts_time', 5, 5)
+        if not re.fullmatch(r'(?:[01][0-9]|2[0-3]):[0-5][0-9]', starts_time):
+            return error('Choose a valid class time.')
+        category = text(data, 'category', 2, 30)
+        selected = db().execute('SELECT name FROM class_categories WHERE lower(name)=lower(?)', (category,)).fetchone()
+        if not selected:
+            return error('Choose a valid class category.')
+        current = now()
+        starts_on = current.date() + timedelta(days=(weekday - current.weekday()) % 7)
+        if starts_on == current.date() and starts_time <= current.strftime('%H:%M'):
+            starts_on += timedelta(days=7)
+        values = (text(data, 'title', 2, 80), weekday, starts_time,
+                  number(data, 'duration', 15, 180, True), number(data, 'capacity', 1, 50, True),
+                  selected['name'], text(data, 'coach', 2, 80), text(data, 'description', 5, 800),
+                  text(data, 'warmup', 3, 800), text(data, 'main', 3, 1600),
+                  text(data, 'finisher', 3, 800), starts_on.isoformat())
+        cursor = db().execute('''INSERT INTO class_series
+            (title,weekday,starts_time,duration,capacity,category,coach,description,warmup,main,finisher,starts_on)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id''', values)
+        series_id = cursor.fetchone()[0]
+        db().commit()
+        return jsonify(ok=True, id=series_id), 201
+
+    @app.delete('/api/owner/class-series/<int:series_id>')
+    @auth(owner=True)
+    def stop_class_series(series_id):
+        connection = db()
+        connection.begin_write()
+        if not connection.execute('SELECT 1 FROM class_series WHERE id=? AND active=1', (series_id,)).fetchone():
+            return error('Recurring programme not found.', 404)
+        connection.execute('UPDATE class_series SET active=0 WHERE id=?', (series_id,))
+        connection.execute('DELETE FROM classes WHERE series_id=? AND starts_at>?',
+                           (series_id, now().isoformat(timespec='minutes')))
+        connection.commit()
+        return jsonify(ok=True)
+
     @app.delete('/api/owner/classes/<int:class_id>')
     @auth(owner=True)
     def delete_class(class_id):
-        result = db().execute('DELETE FROM classes WHERE id=?', (class_id,))
-        db().commit()
-        if not result.rowcount:
+        connection = db()
+        row = connection.execute('SELECT series_id,occurrence_date FROM classes WHERE id=?', (class_id,)).fetchone()
+        if not row:
             return error('Class not found.', 404)
+        if row['series_id']:
+            connection.execute('''INSERT INTO class_series_exceptions(series_id,occurrence_date) VALUES(?,?)
+                ON CONFLICT(series_id,occurrence_date) DO NOTHING''', (row['series_id'], row['occurrence_date']))
+        connection.execute('DELETE FROM classes WHERE id=?', (class_id,))
+        connection.commit()
         return jsonify(ok=True)
 
     @app.put('/api/owner/bookings/<int:booking_id>')
