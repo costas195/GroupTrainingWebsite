@@ -513,7 +513,34 @@ def create_app(config=None):
             user['access'] = [dict(r) for r in db().execute('SELECT * FROM access WHERE user_id=? ORDER BY month', (user['id'],))]
             user['bookings'] = db().execute('SELECT COUNT(*) FROM bookings WHERE user_id=?', (user['id'],)).fetchone()[0]
         bookings = [dict(r) for r in db().execute('''SELECT b.*,u.name,u.email,c.title,c.starts_at FROM bookings b JOIN users u ON u.id=b.user_id JOIN classes c ON c.id=b.class_id ORDER BY c.starts_at''')]
-        return jsonify(members=users, bookings=bookings)
+        categories = [row['name'] for row in db().execute('SELECT name FROM class_categories ORDER BY lower(name)')]
+        return jsonify(members=users, bookings=bookings, categories=categories)
+
+    @app.post('/api/owner/categories')
+    @auth(owner=True)
+    def add_category():
+        name = text(payload(), 'name', 2, 30)
+        if any(char in name for char in '<>'):
+            return error('Use a category name without angle brackets.')
+        try:
+            db().execute('INSERT INTO class_categories(name) VALUES(?)', (name,))
+            db().commit()
+        except INTEGRITY_ERRORS:
+            db().rollback()
+            return error('This category already exists.', 409)
+        return jsonify(ok=True, name=name), 201
+
+    @app.delete('/api/owner/categories/<path:name>')
+    @auth(owner=True)
+    def delete_category(name):
+        category = db().execute('SELECT name FROM class_categories WHERE lower(name)=lower(?)', (name,)).fetchone()
+        if not category:
+            return error('Category not found.', 404)
+        if db().execute('SELECT 1 FROM classes WHERE lower(category)=lower(?) LIMIT 1', (category['name'],)).fetchone():
+            return error('This category is used by a class. Change those classes first.', 409)
+        db().execute('DELETE FROM class_categories WHERE name=?', (category['name'],))
+        db().commit()
+        return jsonify(ok=True)
 
     @app.post('/api/owner/members')
     @auth(owner=True)
@@ -620,8 +647,10 @@ def create_app(config=None):
         capacity = number(data, 'capacity', 1, 50, True)
         duration = number(data, 'duration', 15, 180, True)
         category = text(data, 'category', 2, 30)
-        if category not in ('Strength', 'Conditioning', 'Mobility', 'Hybrid'):
+        selected_category = db().execute('SELECT name FROM class_categories WHERE lower(name)=lower(?)', (category,)).fetchone()
+        if not selected_category:
             return error('Choose a valid class category.')
+        category = selected_category['name']
         values = (title, starts.isoformat(timespec='minutes'), duration, capacity, category, text(data, 'coach', 2, 80), text(data, 'description', 5, 800), text(data, 'warmup', 3, 800), text(data, 'main', 3, 1600), text(data, 'finisher', 3, 800))
         connection = db()
         connection.begin_write()

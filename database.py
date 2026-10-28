@@ -13,7 +13,7 @@ from psycopg import sql
 
 
 INTEGRITY_ERRORS = (sqlite3.IntegrityError, psycopg.IntegrityError)
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 # All domain writes in this single-studio app share a transaction lock. This
 # preserves cross-class overlap, membership, and last-seat rules across workers.
 WRITE_LOCK = 704319820
@@ -91,7 +91,8 @@ def migrate(connection):
         raise RuntimeError('Database schema is newer than this app. Deploy a compatible version.')
     migrations = Path(__file__).parent / 'migrations'
     for version, filename in ((1, '001_initial.sql'), (2, '002_sessions_and_login_limits.sql'),
-                              (3, '003_usernames_and_temporary_passwords.sql')):
+                              (3, '003_usernames_and_temporary_passwords.sql'),
+                              (4, '004_class_categories.sql')):
         if current >= version:
             continue
         source = (migrations / filename).read_text(encoding='utf-8')

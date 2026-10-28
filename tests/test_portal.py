@@ -52,9 +52,9 @@ class PortalTests(unittest.TestCase):
             token = session['csrf']
         return client.open('/api' + path, method=method, json=body, headers={'X-CSRF-Token': token})
 
-    def new_class(self, day=0, capacity=6, minute=0):
+    def new_class(self, day=0, capacity=6, minute=0, category='Strength'):
         start = self.start + timedelta(days=day, minutes=minute)
-        data = dict(title='Test strength', starts_at=start.isoformat(timespec='minutes'), duration=50, capacity=capacity, category='Strength', coach='Jamie', description='A focused training session.', warmup='Easy row and mobility', main='Squat 4 x 6', finisher='Gentle stretch')
+        data = dict(title='Test strength', starts_at=start.isoformat(timespec='minutes'), duration=50, capacity=capacity, category=category, coach='Jamie', description='A focused training session.', warmup='Easy row and mobility', main='Squat 4 x 6', finisher='Gentle stretch')
         result = self.mutate(self.owner, '/owner/classes', data)
         self.assertEqual(result.status_code, 200, result.json)
         with closing(self.connect_db()) as db, db:
@@ -70,6 +70,18 @@ class PortalTests(unittest.TestCase):
         self.assertEqual(self.client.get('/api/owner').status_code, 403)
         self.assertEqual(self.mutate(self.client, '/owner/classes', {}).status_code, 403)
         self.assertEqual(self.mutate(self.owner, '/bookings', {'class_id': 1}).status_code, 403)
+
+    def test_owner_manages_programme_categories(self):
+        initial = self.owner.get('/api/owner').json['categories']
+        self.assertIn('Lower Body', initial)
+        self.assertEqual(self.mutate(self.client, '/owner/categories', {'name': 'Core'}).status_code, 403)
+        self.assertEqual(self.mutate(self.owner, '/owner/categories', {'name': 'Core'}).status_code, 201)
+        self.assertEqual(self.mutate(self.owner, '/owner/categories', {'name': 'core'}).status_code, 409)
+        cls = self.new_class(category='Core')
+        self.assertEqual(self.mutate(self.owner, '/owner/categories/Core', method='DELETE').status_code, 409)
+        self.assertEqual(self.mutate(self.owner, f'/owner/classes/{cls}', method='DELETE').status_code, 200)
+        self.assertEqual(self.mutate(self.owner, '/owner/categories/Core', method='DELETE').status_code, 200)
+        self.assertNotIn('Core', self.owner.get('/api/owner').json['categories'])
 
     def test_month_access_controls_visibility_and_booking(self):
         cls = self.new_class()
