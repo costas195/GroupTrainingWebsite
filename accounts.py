@@ -4,6 +4,24 @@ import secrets
 import unicodedata
 
 
+TEMPORARY_PASSWORD_LENGTH = 5
+
+
+def generate_temporary_password():
+    """Return a short, readable, single-use password for SMS delivery."""
+    upper = 'ABCDEFGHJKLMNPQRSTUVWXYZ'
+    lower = 'abcdefghijkmnopqrstuvwxyz'
+    digits = '23456789'
+    characters = [secrets.choice(upper), secrets.choice(lower), secrets.choice(digits)]
+    alphabet = upper + lower + digits
+    characters.extend(secrets.choice(alphabet) for _ in range(TEMPORARY_PASSWORD_LENGTH - len(characters)))
+    # Fisher-Yates with the operating system's cryptographic random source.
+    for index in range(len(characters) - 1, 0, -1):
+        other = secrets.randbelow(index + 1)
+        characters[index], characters[other] = characters[other], characters[index]
+    return ''.join(characters)
+
+
 def validate_username(value):
     username = str(value).strip().lower()
     if not re.fullmatch(r'[a-z0-9][a-z0-9._-]{2,31}', username):

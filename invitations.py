@@ -59,8 +59,8 @@ def send_invitation(config, channel, recipient, email, link):
 def send_temporary_credentials(config, recipient, username, temporary_password):
     # Credentials occur only in the HTTPS provider request body, never in a URL,
     # persisted outbox, provider response, or application log.
-    message = (f'NF Hybrid\nUsername: {username}\nTemporary password: {temporary_password}\n'
-               f'Login: {portal_url(config)}/\nChange password at first login. Expires in 24h.')
+    message = (f'NF Hybrid\nUser: {username}\nTemp pass: {temporary_password}\n'
+               'Valid 24h')
     return _send(config, 'sms', recipient, message)
 
 

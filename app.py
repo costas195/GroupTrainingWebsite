@@ -18,7 +18,7 @@ import psycopg
 from localization import error_message, field_label, localize_demo
 from invitations import DeliveryError, portal_url, send_invitation, send_temporary_credentials, validate_channel
 from database import Connection, INTEGRITY_ERRORS, SCHEMA_VERSION, consume_login_attempt, migrate
-from accounts import generate_username, validate_username
+from accounts import generate_temporary_password, generate_username, validate_username
 
 ROOT = Path(__file__).resolve().parent
 
@@ -240,7 +240,7 @@ def create_app(config=None):
         return result
 
     def prepare_credentials(uid, phone):
-        temporary_password = secrets.token_urlsafe(12)
+        temporary_password = generate_temporary_password()
         issuance = secrets.token_hex(32)
         stamp = int(time.time())
         db().execute('''UPDATE users SET password_hash=?,must_change_password=1,

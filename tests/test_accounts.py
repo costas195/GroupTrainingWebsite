@@ -12,6 +12,7 @@ from urllib.parse import parse_qs
 
 from werkzeug.security import check_password_hash
 
+from accounts import generate_temporary_password
 from app import create_app
 from database import Connection, migrate
 from invitations import DeliveryError, send_temporary_credentials
@@ -76,6 +77,14 @@ class AccountTests(unittest.TestCase):
         self.assertEqual(second['username'],'john.smith2')
         self.assertRegex(greek['username'],r'^member-[0-9a-f]{8}$')
         self.assertNotEqual(first['id'],second['id'])
+
+    def test_temporary_password_is_short_readable_and_mixed(self):
+        for _ in range(25):
+            password = generate_temporary_password()
+            self.assertRegex(password, r'^[A-HJ-NP-Za-km-z2-9]{5}$')
+            self.assertRegex(password, r'[A-Z]')
+            self.assertRegex(password, r'[a-z]')
+            self.assertRegex(password, r'[0-9]')
 
     def test_first_login_is_restricted_persists_on_reload_and_password_is_hashed(self):
         member = self.create()
@@ -221,5 +230,8 @@ class CredentialDeliveryTests(unittest.TestCase):
         body=parse_qs(request.data.decode())
         self.assertIn('john.smith',body['message'][0])
         self.assertIn('TemporarySecret!',body['message'][0])
-        self.assertIn('first login',body['message'][0])
+        self.assertIn('Valid 24h',body['message'][0])
+        self.assertNotIn('http',body['message'][0])
+        self.assertNotIn('portal.example.com',body['message'][0])
+        self.assertLess(len(body['message'][0]),80)
         self.assertNotIn('TemporarySecret!',request.full_url)
