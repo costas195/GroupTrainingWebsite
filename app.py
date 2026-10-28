@@ -186,6 +186,12 @@ def create_app(config=None):
             raise ValueError(f'Το πεδίο «{field_label(key)}» πρέπει να είναι μεταξύ {minimum} και {maximum}.')
         return value
 
+    def password_value(data):
+        value = data.get('new_password')
+        if not isinstance(value, str) or value == '':
+            raise ValueError('Ο νέος κωδικός δεν μπορεί να είναι κενός.')
+        return value
+
     @app.errorhandler(ValueError)
     def invalid(exc):
         return error(str(exc))
@@ -348,7 +354,7 @@ def create_app(config=None):
         invalid_link = 'Η πρόσκληση έληξε ή δεν είναι έγκυρη. Ζήτησε νέα πρόσκληση από τον προπονητή σου.'
         if not re.fullmatch(r'[A-Za-z0-9_-]{43}', token):
             return error(invalid_link, 400)
-        new_password = text(data, 'new_password', 1, 8)
+        new_password = password_value(data)
         token_hash = hashlib.sha256(token.encode()).hexdigest()
         connection = db()
         connection.begin_write()
@@ -478,7 +484,7 @@ def create_app(config=None):
         data = payload()
         if not g.user['must_change_password'] and not check_password_hash(g.user['password_hash'], str(data.get('current_password', ''))):
             return error('Your current password is incorrect.', 403)
-        new_password = text(data, 'new_password', 1, 8)
+        new_password = password_value(data)
         db().execute('''UPDATE users SET password_hash=?,must_change_password=0,
             temporary_password_expires_at=NULL,session_version=session_version+1 WHERE id=?''',
             (generate_password_hash(new_password, method='scrypt'), g.user['id']))

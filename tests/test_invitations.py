@@ -116,7 +116,7 @@ class InvitationTests(unittest.TestCase):
     def test_expired_link_and_invalid_password_do_not_activate(self):
         self.create()
         token = self.token()
-        self.assertEqual(self.accept(token, '123456789').status_code, 400)
+        self.assertEqual(self.accept(token, '').status_code, 400)
         self.execute('UPDATE member_invitations SET expires_at=?', (int(time.time()) - 1,))
         self.assertEqual(self.accept(token).status_code, 400)
         self.assertEqual(self.accept('invalid-token').status_code, 400)

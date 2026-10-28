@@ -85,14 +85,14 @@ class AccountTests(unittest.TestCase):
         stored = self.execute('SELECT email FROM users WHERE id=?', (member['id'],))[0][0]
         self.assertTrue(stored.endswith('@no-email.invalid'))
 
-    def test_personal_password_accepts_one_to_eight_characters_only(self):
+    def test_personal_password_has_no_length_or_composition_rules(self):
         member = self.create(email='short-password@example.com')
         temporary = self.messages[-1]['password']
         client = self.sign_in()
-        self.assertEqual(self.request(client, '/password', {'new_password': '123456789'}, method='PUT').status_code, 400)
-        self.assertEqual(self.request(client, '/password', {'new_password': temporary}, method='PUT').status_code, 200)
-        self.assertEqual(self.request(client, '/password', {'current_password': temporary, 'new_password': 'x'}, method='PUT').status_code, 200)
-        self.assertEqual(self.request(self.app.test_client(), '/login', {'username': member['username'], 'password': 'x'}).status_code, 200)
+        long_password = 'words spaces symbols !@# ' * 20
+        self.assertEqual(self.request(client, '/password', {'new_password': long_password}, method='PUT').status_code, 200)
+        self.assertEqual(self.request(client, '/password', {'current_password': long_password, 'new_password': ' '}, method='PUT').status_code, 200)
+        self.assertEqual(self.request(self.app.test_client(), '/login', {'username': member['username'], 'password': ' '}).status_code, 200)
 
     def test_temporary_password_is_short_readable_and_mixed(self):
         for _ in range(25):
@@ -111,7 +111,6 @@ class AccountTests(unittest.TestCase):
         for path in ('/api/dashboard','/api/owner'):
             self.assertEqual(client.get(path).status_code,403)
         self.assertEqual(self.request(client,'/profile',dict(name='Changed'),method='PUT').status_code,403)
-        self.assertEqual(self.request(client,'/password',dict(new_password='123456789'),method='PUT').status_code,400)
         self.assertEqual(client.put('/api/password',json=dict(new_password='Abcd1234')).status_code,403)
         new_password='Abcd1234'
         self.assertEqual(self.request(client,'/password',dict(new_password=new_password),method='PUT').status_code,200)
