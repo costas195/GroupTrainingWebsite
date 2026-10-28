@@ -72,7 +72,7 @@ class ProductionConfigTests(unittest.TestCase):
                 token = client.get('/api/session').json['csrf']
                 client.post('/api/login', json=dict(email='client@form.demo', password='FormDemo2026!'), headers={'X-CSRF-Token': token})
             token = first.get('/api/session').json['csrf']
-            response = first.put('/api/password', json=dict(current_password='FormDemo2026!', new_password='NewPrivatePassword!'), headers={'X-CSRF-Token': token})
+            response = first.put('/api/password', json=dict(current_password='FormDemo2026!', new_password='Prod1234'), headers={'X-CSRF-Token': token})
             self.assertEqual(response.status_code, 200)
             self.assertEqual(first.get('/api/dashboard').status_code, 200)
             self.assertEqual(second.get('/api/dashboard').status_code, 401)

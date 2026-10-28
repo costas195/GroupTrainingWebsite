@@ -117,6 +117,14 @@ class PortalTests(unittest.TestCase):
         self.assertEqual(self.book(first).status_code, 201)
         self.assertEqual(self.book(second).status_code, 409)
 
+    def test_owner_can_create_identical_classes_at_the_same_time(self):
+        first = self.new_class()
+        second = self.new_class()
+        self.assertNotEqual(first, second)
+        with closing(self.connect_db()) as db:
+            starts = db.execute('SELECT starts_at FROM classes WHERE id IN (?,?) ORDER BY id', (first, second)).fetchall()
+        self.assertEqual(starts[0], starts[1])
+
     def test_revoke_releases_future_places(self):
         cls = self.new_class()
         self.assertEqual(self.book(cls).status_code, 201)

@@ -63,7 +63,7 @@ class InvitationTests(unittest.TestCase):
     def token(self, index=-1):
         return self.messages[index]['link'].split('#activate=')[1]
 
-    def accept(self, token, password='MyPrivatePassword2026!'):
+    def accept(self, token, password='Pass1234'):
         return self.post(self.app.test_client(), '/invitations/accept', dict(token=token, new_password=password))
 
     def execute(self, sql, parameters=()):
@@ -87,7 +87,7 @@ class InvitationTests(unittest.TestCase):
         self.assertEqual(self.accept(token).status_code, 200)
         self.assertEqual(self.accept(token).status_code, 400)
         self.assertEqual(self.execute('SELECT token_hash,status FROM member_invitations'), [(None, 'used')])
-        self.assertEqual(self.post(self.app.test_client(), '/login', dict(email='member@example.com', password='MyPrivatePassword2026!')).status_code, 200)
+        self.assertEqual(self.post(self.app.test_client(), '/login', dict(email='member@example.com', password='Pass1234')).status_code, 200)
         self.allow_resend()
         self.assertEqual(self.post(self.owner, f"/owner/members/{result.json['id']}/invitation", {}).status_code, 409)
 
@@ -116,7 +116,7 @@ class InvitationTests(unittest.TestCase):
     def test_expired_link_and_invalid_password_do_not_activate(self):
         self.create()
         token = self.token()
-        self.assertEqual(self.accept(token, 'short').status_code, 400)
+        self.assertEqual(self.accept(token, '123456789').status_code, 400)
         self.execute('UPDATE member_invitations SET expires_at=?', (int(time.time()) - 1,))
         self.assertEqual(self.accept(token).status_code, 400)
         self.assertEqual(self.accept('invalid-token').status_code, 400)
@@ -152,16 +152,16 @@ class InvitationTests(unittest.TestCase):
         uid = self.create().json['id']
         guest = self.app.test_client()
         self.assertEqual(self.post(guest, '/owner/members', {}).status_code, 401)
-        self.assertEqual(guest.post('/api/invitations/accept', json=dict(token=self.token(), new_password='MyPassword2026!')).status_code, 403)
+        self.assertEqual(guest.post('/api/invitations/accept', json=dict(token=self.token(), new_password='Pass1234')).status_code, 403)
         self.accept(self.token())
-        self.post(guest, '/login', dict(email='member@example.com', password='MyPrivatePassword2026!'))
+        self.post(guest, '/login', dict(email='member@example.com', password='Pass1234'))
         self.assertEqual(self.post(guest, '/owner/members', {}).status_code, 403)
         self.assertEqual(self.post(guest, f'/owner/members/{uid}/invitation', {}).status_code, 403)
 
     def test_concurrent_activation_only_one_password_wins(self):
         self.create()
         token = self.token()
-        passwords = ['FirstPrivatePassword!', 'SecondPrivatePassword!']
+        passwords = ['First123', 'Second12']
         with ThreadPoolExecutor(max_workers=2) as pool:
             results = list(pool.map(lambda password: self.accept(token, password).status_code, passwords))
         self.assertEqual(sorted(results), [200, 400])
@@ -185,7 +185,7 @@ class InvitationTests(unittest.TestCase):
         create_app(dict(self.app.config))
         self.assertEqual(self.accept(token).status_code, 200)
         member = self.app.test_client()
-        self.post(member, '/login', dict(email='member@example.com', password='MyPrivatePassword2026!'))
+        self.post(member, '/login', dict(email='member@example.com', password='Pass1234'))
         self.assertNotIn('invitation', member.get('/api/dashboard').get_data(as_text=True))
         data = self.owner.get('/api/owner').json
         self.assertEqual(data['members'][0]['invitation']['status'], 'used')

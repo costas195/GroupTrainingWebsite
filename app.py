@@ -191,7 +191,10 @@ def create_app(config=None):
         return error(str(exc))
 
     def public_user(row):
-        return {key: row[key] for key in ('id', 'name', 'email', 'username', 'phone', 'role', 'goal', 'priority', 'must_change_password')}
+        result = {key: row[key] for key in ('id', 'name', 'email', 'username', 'phone', 'role', 'goal', 'priority', 'must_change_password')}
+        if result['email'].endswith('@no-email.invalid'):
+            result['email'] = ''
+        return result
 
     def invitation_info(uid):
         row = db().execute('''SELECT channel,recipient,status,expires_at,used_at,last_attempt_at,kind
@@ -345,7 +348,7 @@ def create_app(config=None):
         invalid_link = 'Η πρόσκληση έληξε ή δεν είναι έγκυρη. Ζήτησε νέα πρόσκληση από τον προπονητή σου.'
         if not re.fullmatch(r'[A-Za-z0-9_-]{43}', token):
             return error(invalid_link, 400)
-        new_password = text(data, 'new_password', 10, 128)
+        new_password = text(data, 'new_password', 1, 8)
         token_hash = hashlib.sha256(token.encode()).hexdigest()
         connection = db()
         connection.begin_write()
@@ -475,9 +478,7 @@ def create_app(config=None):
         data = payload()
         if not g.user['must_change_password'] and not check_password_hash(g.user['password_hash'], str(data.get('current_password', ''))):
             return error('Your current password is incorrect.', 403)
-        new_password = text(data, 'new_password', 10, 128)
-        if check_password_hash(g.user['password_hash'], new_password):
-            return error('Διάλεξε διαφορετικό νέο κωδικό.')
+        new_password = text(data, 'new_password', 1, 8)
         db().execute('''UPDATE users SET password_hash=?,must_change_password=0,
             temporary_password_expires_at=NULL,session_version=session_version+1 WHERE id=?''',
             (generate_password_hash(new_password, method='scrypt'), g.user['id']))
@@ -509,6 +510,8 @@ def create_app(config=None):
     def owner():
         users = [dict(r) for r in db().execute("SELECT id,name,email,username,phone,goal,priority,must_change_password FROM users WHERE role='client' ORDER BY name")]
         for user in users:
+            if user['email'].endswith('@no-email.invalid'):
+                user['email'] = ''
             user['invitation'] = invitation_info(user['id'])
             user['access'] = [dict(r) for r in db().execute('SELECT * FROM access WHERE user_id=? ORDER BY month', (user['id'],))]
             user['bookings'] = db().execute('SELECT COUNT(*) FROM bookings WHERE user_id=?', (user['id'],)).fetchone()[0]
@@ -547,9 +550,11 @@ def create_app(config=None):
     def add_member():
         data = payload()
         name = (text(data, 'first_name', 1, 39) + ' ' + text(data, 'surname', 1, 39)) if 'first_name' in data else text(data, 'name', 2, 80)
-        email = text(data, 'email', 5, 254).lower()
-        if '@' not in email or '.' not in email.rsplit('@', 1)[-1] or any(c.isspace() for c in email):
+        email = text(data, 'email', 0, 254).lower()
+        if email and ('@' not in email or '.' not in email.rsplit('@', 1)[-1] or any(c.isspace() for c in email)):
             return error('Enter a valid email address.')
+        if not email:
+            email = f'member-{secrets.token_hex(12)}@no-email.invalid'
         channel = text(data, 'delivery_channel', 1, 10) if 'delivery_channel' in data else 'sms'
         phone = text(data, 'phone', 0, 16)
         try:

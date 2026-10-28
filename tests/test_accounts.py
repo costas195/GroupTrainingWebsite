@@ -78,6 +78,22 @@ class AccountTests(unittest.TestCase):
         self.assertRegex(greek['username'],r'^member-[0-9a-f]{8}$')
         self.assertNotEqual(first['id'],second['id'])
 
+    def test_email_is_optional_and_hidden_internal_placeholder(self):
+        member = self.create(email='')
+        visible = next(item for item in self.owner.get('/api/owner').json['members'] if item['id'] == member['id'])
+        self.assertEqual(visible['email'], '')
+        stored = self.execute('SELECT email FROM users WHERE id=?', (member['id'],))[0][0]
+        self.assertTrue(stored.endswith('@no-email.invalid'))
+
+    def test_personal_password_accepts_one_to_eight_characters_only(self):
+        member = self.create(email='short-password@example.com')
+        temporary = self.messages[-1]['password']
+        client = self.sign_in()
+        self.assertEqual(self.request(client, '/password', {'new_password': '123456789'}, method='PUT').status_code, 400)
+        self.assertEqual(self.request(client, '/password', {'new_password': temporary}, method='PUT').status_code, 200)
+        self.assertEqual(self.request(client, '/password', {'current_password': temporary, 'new_password': 'x'}, method='PUT').status_code, 200)
+        self.assertEqual(self.request(self.app.test_client(), '/login', {'username': member['username'], 'password': 'x'}).status_code, 200)
+
     def test_temporary_password_is_short_readable_and_mixed(self):
         for _ in range(25):
             password = generate_temporary_password()
@@ -95,9 +111,9 @@ class AccountTests(unittest.TestCase):
         for path in ('/api/dashboard','/api/owner'):
             self.assertEqual(client.get(path).status_code,403)
         self.assertEqual(self.request(client,'/profile',dict(name='Changed'),method='PUT').status_code,403)
-        self.assertEqual(self.request(client,'/password',dict(new_password=message['password']),method='PUT').status_code,400)
-        self.assertEqual(client.put('/api/password',json=dict(new_password='MyPrivatePassword2026!')).status_code,403)
-        new_password='MyPrivatePassword2026!'
+        self.assertEqual(self.request(client,'/password',dict(new_password='123456789'),method='PUT').status_code,400)
+        self.assertEqual(client.put('/api/password',json=dict(new_password='Abcd1234')).status_code,403)
+        new_password='Abcd1234'
         self.assertEqual(self.request(client,'/password',dict(new_password=new_password),method='PUT').status_code,200)
         self.assertEqual(client.get('/api/dashboard').status_code,200)
         self.assertEqual(other_session.get('/api/dashboard').status_code,401)
@@ -118,7 +134,7 @@ class AccountTests(unittest.TestCase):
     def test_expiry_and_resend_invalidate_old_password_and_restricted_sessions(self):
         member=self.create(); old=dict(self.messages[-1]); client=self.sign_in()
         self.execute('UPDATE users SET temporary_password_expires_at=? WHERE id=?',(int(time.time())-1,member['id']))
-        self.assertEqual(self.request(client,'/password',dict(new_password='NewPrivatePassword!'),method='PUT').status_code,401)
+        self.assertEqual(self.request(client,'/password',dict(new_password='Abc12345'),method='PUT').status_code,401)
         self.assertEqual(self.request(self.owner,f"/owner/members/{member['id']}/invitation",{}).status_code,429)
         self.execute('UPDATE member_invitations SET last_attempt_at=? WHERE user_id=?',(int(time.time())-61,member['id']))
         result=self.request(self.owner,f"/owner/members/{member['id']}/invitation",{})
@@ -128,11 +144,11 @@ class AccountTests(unittest.TestCase):
         self.assertEqual(restricted.get('/api/dashboard').status_code,403)
         self.execute('UPDATE member_invitations SET last_attempt_at=? WHERE user_id=?',(int(time.time())-61,member['id']))
         self.assertEqual(self.request(self.owner,f"/owner/members/{member['id']}/invitation",{}).status_code,200)
-        self.assertEqual(self.request(restricted,'/password',dict(new_password='NewPrivatePassword!'),method='PUT').status_code,401)
+        self.assertEqual(self.request(restricted,'/password',dict(new_password='Abc12345'),method='PUT').status_code,401)
 
     def test_username_changes_keep_id_membership_and_progress(self):
         member=self.create(); client=self.sign_in()
-        self.request(client,'/password',dict(new_password='MyPrivatePassword2026!'),method='PUT')
+        self.request(client,'/password',dict(new_password='Abcd1234'),method='PUT')
         self.execute('INSERT INTO access VALUES(?,?,?)',(member['id'],'2026-11',3))
         self.execute("INSERT INTO progress(user_id,logged_on,kind,exercise,weight,note) VALUES(?,'2026-11-01','bodyweight','Weight',70,'Private')",(member['id'],))
         self.execute("""INSERT INTO classes(id,title,starts_at,duration,capacity,category,coach,description,warmup,main,finisher)
@@ -148,8 +164,8 @@ class AccountTests(unittest.TestCase):
         self.assertEqual(self.execute('SELECT user_id FROM access'),[(member['id'],)])
         self.assertEqual(self.execute('SELECT user_id FROM progress'),[(member['id'],)])
         self.assertEqual(self.execute('SELECT user_id,class_id FROM bookings'),[(member['id'],501)])
-        self.assertEqual(self.request(self.app.test_client(),'/login',dict(username='john.smith',password='MyPrivatePassword2026!')).status_code,401)
-        self.assertEqual(self.request(self.app.test_client(),'/login',dict(username='john.owner.changed',password='MyPrivatePassword2026!')).status_code,200)
+        self.assertEqual(self.request(self.app.test_client(),'/login',dict(username='john.smith',password='Abcd1234')).status_code,401)
+        self.assertEqual(self.request(self.app.test_client(),'/login',dict(username='john.owner.changed',password='Abcd1234')).status_code,200)
 
     def test_delivery_failure_keeps_account_and_does_not_expose_password(self):
         self.app.config['DEMO_MODE']=False
@@ -184,7 +200,7 @@ class AccountTests(unittest.TestCase):
         self.create()
         clients=[self.sign_in(),self.sign_in()]
         def change(index):
-            return self.request(clients[index],'/password',dict(new_password=f'NewPrivatePassword{index}!'),method='PUT').status_code
+            return self.request(clients[index],'/password',dict(new_password=f'Pass{index}x7'),method='PUT').status_code
         with ThreadPoolExecutor(max_workers=2) as pool:
             results=list(pool.map(change,[0,1]))
         self.assertEqual(sorted(results),[200,401])
