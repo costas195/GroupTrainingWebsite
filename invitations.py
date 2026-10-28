@@ -48,20 +48,34 @@ def validate_channel(config, channel, phone=''):
 
 
 def send_invitation(config, channel, recipient, email, link):
+    email_text = (f'Καλώς ήρθες στο NF Hybrid!\n\nΌνομα χρήστη: {email}\n'
+                  f'Όρισε τον προσωπικό σου κωδικό: {link}\n\n'
+                  'Ο σύνδεσμος ισχύει για 24 ώρες και χρησιμοποιείται μία φορά.\n'
+                  'Αν δεν περίμενες αυτή την πρόσκληση, αγνόησε το μήνυμα.')
+    return _send(config, channel, recipient,
+                 f'NF Hybrid: Login: {email}. Set password (24h): {link}', email_text)
+
+
+def send_temporary_credentials(config, recipient, username, temporary_password):
+    # Credentials occur only in the HTTPS provider request body, never in a URL,
+    # persisted outbox, provider response, or application log.
+    message = (f'NF Hybrid\nUsername: {username}\nTemporary password: {temporary_password}\n'
+               f'Login: {portal_url(config)}/\nChange password at first login. Expires in 24h.')
+    return _send(config, 'sms', recipient, message)
+
+
+def _send(config, channel, recipient, sms_text, email_text=''):
     # No automatic retries: a timeout may mean the provider accepted the message.
     # The owner can issue a fresh invitation; the previous link is then invalid.
     if channel == 'email':
         body = json.dumps({
             'from': config['INVITE_FROM_EMAIL'], 'to': [recipient],
-            'subject': 'FORM · Ο λογαριασμός σου είναι έτοιμος',
-            'text': f'Καλώς ήρθες στο FORM!\n\nEmail σύνδεσης: {email}\n'
-                    f'Όρισε τον προσωπικό σου κωδικό: {link}\n\n'
-                    'Ο σύνδεσμος ισχύει για 24 ώρες και χρησιμοποιείται μία φορά.\n'
-                    'Αν δεν περίμενες αυτή την πρόσκληση, αγνόησε το μήνυμα.',
+            'subject': 'NF Hybrid · Ο λογαριασμός σου είναι έτοιμος',
+            'text': email_text,
         }).encode('utf-8')
         req = Request('https://api.resend.com/emails', data=body, headers={
             'Authorization': 'Bearer ' + config['RESEND_API_KEY'],
-            'Content-Type': 'application/json', 'User-Agent': 'FORM-Portal/1.0',
+            'Content-Type': 'application/json', 'User-Agent': 'NF-Hybrid-Portal/1.0',
         }, method='POST')
         id_key = 'id'
     elif config.get('SMS_PROVIDER', 'websms') == 'websms':
@@ -69,13 +83,13 @@ def send_invitation(config, channel, recipient, email, link):
         # user's Barbershop/bookings/sms.py integration. Keep the key in the body.
         body = urlencode({'to': recipient.lstrip('+'), 'from': config['WEBSMS_SENDER'],
                           'key': config['WEBSMS_API_KEY'],
-                          'message': f'FORM: Login: {email}. Set password (24h): {link}'}).encode('ascii')
+                          'message': sms_text}).encode('ascii')
         req = Request('https://websms.com.cy/api/send-sm', data=body,
                       headers={'Content-Type': 'application/x-www-form-urlencoded'}, method='POST')
         id_key = None
     else:
         body = urlencode({'To': recipient, 'From': config['TWILIO_FROM_NUMBER'],
-                          'Body': f'FORM: Email σύνδεσης: {email}. Όρισε κωδικό (24 ώρες): {link}'}).encode('ascii')
+                          'Body': sms_text}).encode('ascii')
         auth = base64.b64encode((config['TWILIO_ACCOUNT_SID'] + ':' + config['TWILIO_AUTH_TOKEN']).encode()).decode()
         req = Request('https://api.twilio.com/2010-04-01/Accounts/' + config['TWILIO_ACCOUNT_SID'] + '/Messages.json',
                       data=body, headers={'Authorization': 'Basic ' + auth,

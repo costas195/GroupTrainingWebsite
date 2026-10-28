@@ -1,5 +1,5 @@
 name: Portal checks
-on: [push, pull_request]
+on: [push, pull_request, workflow_dispatch]
 permissions:
   contents: read
 jobs:
@@ -24,10 +24,26 @@ jobs:
       GYM_TIMEZONE: Asia/Nicosia
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@v7
         with:
           python-version-file: .python-version
           cache: pip
-      - run: pip install -r requirements.txt
+      - run: python -m pip install -r requirements-dev.txt
+      - run: python -m pip check
+      - run: python scripts/validate_release.py
       - run: python -m unittest discover -s tests -v
       - run: node --check static/app.js
+      - name: Validate production Gunicorn startup
+        env:
+          APP_ENV: production
+          DEMO_MODE: "false"
+          AUTO_MIGRATE: "false"
+          DATABASE_URL: postgresql://form_test:test-only-password@127.0.0.1:5432/form_test
+          SECRET_KEY: ci-only-secret-that-is-long-enough-for-configuration-validation
+          PUBLIC_BASE_URL: https://portal.example.com
+          WEBSMS_API_KEY: ci-only-not-a-live-key
+          WEBSMS_SENDER: NF Hybrid
+        run: gunicorn --check-config --workers 2 --threads 2 app:app
+      - run: python scripts/build_release.py

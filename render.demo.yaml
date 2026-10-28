@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: form-gym-portal-demo
+    name: nf-hybrid-portal-demo
     runtime: python
     plan: free
     buildCommand: pip install -r requirements.txt

@@ -9,3 +9,7 @@ test-results/
 .idea/
 previews/
 *.zip
+dist/
+.pytest_cache/
+.coverage
+htmlcov/

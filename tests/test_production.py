@@ -7,18 +7,21 @@ from contextlib import closing
 from unittest.mock import patch
 
 from app import create_app
+from database import SCHEMA_VERSION
 
 
 class ProductionConfigTests(unittest.TestCase):
     def config(self, **changes):
         config = dict(TESTING=True, AUTO_MIGRATE=False, APP_ENV='production', DEMO_MODE=False,
                       DATABASE_URL='postgresql://test:test@localhost/test', SECRET_KEY='x' * 64,
-                      PUBLIC_BASE_URL='https://gym.example.com')
+                      PUBLIC_BASE_URL='https://gym.example.com', SMS_PROVIDER='websms',
+                      WEBSMS_API_KEY='test-only-key', WEBSMS_SENDER='NF Hybrid')
         config.update(changes)
         return config
 
     def test_live_configuration_fails_closed(self):
-        for change in (dict(DEMO_MODE=True), dict(DATABASE_URL=''), dict(SECRET_KEY='short'), dict(DATABASE_SSLMODE='disable')):
+        for change in (dict(DEMO_MODE=True), dict(DATABASE_URL=''), dict(SECRET_KEY='short'),
+                       dict(DATABASE_SSLMODE='disable'), dict(WEBSMS_API_KEY=''), dict(WEBSMS_SENDER='')):
             with self.subTest(change=change), self.assertRaises(RuntimeError):
                 create_app(self.config(**change))
         with patch.dict(os.environ, {}, clear=True), self.assertRaises(RuntimeError):
@@ -33,6 +36,10 @@ class ProductionConfigTests(unittest.TestCase):
         self.assertEqual(app.test_client().get('/', base_url='https://attacker.example.com').status_code, 400)
         response = app.test_client().get('/', base_url='https://gym.example.com')
         self.assertEqual(response.headers['Strict-Transport-Security'], 'max-age=31536000')
+        self.assertEqual(response.headers['X-Robots-Tag'], 'noindex, nofollow, nosnippet')
+        robots = app.test_client().get('/robots.txt', base_url='https://gym.example.com')
+        self.assertEqual(robots.status_code, 200)
+        self.assertIn('Disallow: /', robots.get_data(as_text=True))
 
     def test_predeploy_initialization_preserves_owner_on_repeated_runs(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -45,7 +52,7 @@ class ProductionConfigTests(unittest.TestCase):
                 app.extensions['initialize_database']()
             with closing(sqlite3.connect(path)) as connection:
                 self.assertEqual(connection.execute('SELECT COUNT(*) FROM users').fetchone()[0], 1)
-                self.assertEqual(connection.execute('SELECT MAX(version) FROM schema_migrations').fetchone()[0], 2)
+                self.assertEqual(connection.execute('SELECT MAX(version) FROM schema_migrations').fetchone()[0], SCHEMA_VERSION)
 
     def test_login_limits_are_shared_across_app_processes(self):
         with tempfile.TemporaryDirectory() as folder:

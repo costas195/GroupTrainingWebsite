@@ -118,7 +118,7 @@ class PortalTests(unittest.TestCase):
         self.assertTrue(all(any(a['month'] == month and a['weekly_limit'] == 4 for a in access) for month in ['2027-12', '2028-01', '2028-02']))
 
     def test_member_creation_and_private_progress(self):
-        data = dict(name='Test Member', email='new@example.com', password='Temporary2026!', goal='Stronger', priority='Technique')
+        data = dict(name='Test Member', email='new@example.com', phone='+35799123456', password='Temporary2026!', goal='Stronger', priority='Technique')
         result = self.mutate(self.owner, '/owner/members', data)
         self.assertEqual(result.status_code, 201)
         self.assertEqual(self.mutate(self.owner, '/owner/members', data).status_code, 409)
@@ -160,7 +160,7 @@ class PortalTests(unittest.TestCase):
         anonymous = self.app.test_client()
         page = anonymous.get('/').get_data(as_text=True)
         self.assertIn('lang="el"', page)
-        self.assertIn('Μικρή ομάδα. Πραγματική πρόοδος.', page)
+        self.assertIn('<title>Σύνδεση</title>', page)
         self.assertEqual(anonymous.get('/api/dashboard').json['error'], 'Συνδέσου για να συνεχίσεις.')
         self.assertEqual(self.client.get('/api/dashboard').json['user']['name'], 'Αλέξανδρος Δημητρίου')
         result = self.mutate(self.client, '/progress', {'kind':'bodyweight','logged_on':datetime.now().date().isoformat(),'weight':'NaN','note':''})

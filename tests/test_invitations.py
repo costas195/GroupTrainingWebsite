@@ -34,6 +34,7 @@ class InvitationTests(unittest.TestCase):
             'email': 'owner@example.com', 'password': 'OwnerPassword2026!'}).status_code, 200)
         self.messages = []
         self.sender = patch('app.send_invitation', side_effect=self.capture).start()
+        self.sms_sender = patch('app.send_temporary_credentials', side_effect=self.capture_credentials).start()
         self.addCleanup(patch.stopall)
 
     def database_config(self):
@@ -46,12 +47,18 @@ class InvitationTests(unittest.TestCase):
         self.messages.append(dict(channel=channel, recipient=recipient, email=email, link=link))
         return 'provider-message-id'
 
+    def capture_credentials(self, config, recipient, username, password):
+        self.messages.append(dict(channel='sms', recipient=recipient, username=username, password=password))
+        return 'provider-sms-id'
+
     def post(self, client, path, data):
         csrf = client.get('/api/session').json['csrf']
         return client.post('/api' + path, json=data, headers={'X-CSRF-Token': csrf})
 
     def create(self, **fields):
-        return self.post(self.owner, '/owner/members', dict(name='New Member', email='member@example.com', **fields))
+        payload = dict(name='New Member', email='member@example.com', delivery_channel='email')
+        payload.update(fields)
+        return self.post(self.owner, '/owner/members', payload)
 
     def token(self, index=-1):
         return self.messages[index]['link'].split('#activate=')[1]
@@ -84,12 +91,12 @@ class InvitationTests(unittest.TestCase):
         self.allow_resend()
         self.assertEqual(self.post(self.owner, f"/owner/members/{result.json['id']}/invitation", {}).status_code, 409)
 
-    def test_sms_uses_phone_and_keeps_email_as_login(self):
+    def test_sms_uses_phone_and_generated_username(self):
         result = self.create(delivery_channel='sms', phone='+306912345678')
         self.assertEqual(result.status_code, 201)
         self.assertEqual(self.messages[0]['channel'], 'sms')
         self.assertEqual(self.messages[0]['recipient'], '+306912345678')
-        self.assertEqual(self.messages[0]['email'], 'member@example.com')
+        self.assertEqual(self.messages[0]['username'], 'new.member')
 
     def test_websms_configuration_for_cyprus_members(self):
         self.app.config.update(SMS_PROVIDER='websms', WEBSMS_API_KEY='test-websms-key', WEBSMS_SENDER='FORM')
@@ -124,7 +131,8 @@ class InvitationTests(unittest.TestCase):
         self.assertEqual(result.status_code, 200)
         self.assertEqual(result.json['invitation']['channel'], 'sms')
         self.assertEqual(self.accept(old_token).status_code, 400)
-        self.assertEqual(self.accept(self.token()).status_code, 200)
+        self.assertEqual(self.messages[-1]['username'], 'new.member')
+        self.assertEqual(self.post(self.app.test_client(), '/login', dict(username='new.member',password=self.messages[-1]['password'])).json['password_change_required'], True)
 
     def test_delivery_failure_keeps_member_and_allows_retry(self):
         from invitations import DeliveryError
@@ -164,10 +172,11 @@ class InvitationTests(unittest.TestCase):
         self.app.config['DEMO_MODE'] = True
         result = self.create(delivery_channel='sms', phone='+306912345678')
         self.assertEqual(result.json['invitation']['status'], 'demo')
-        self.assertTrue(result.json['demo_activation_url'].startswith('/#activate='))
+        self.assertEqual(result.json['demo_credentials']['username'], 'new.member')
         self.sender.assert_not_called()
+        self.sms_sender.assert_not_called()
         self.app.config['DEMO_MODE'] = False
-        self.assertEqual(self.accept(result.json['demo_activation_url'].split('=')[1]).status_code, 400)
+        self.assertEqual(self.post(self.app.test_client(), '/login', dict(username='new.member',password=result.json['demo_credentials']['temporary_password'])).status_code, 403)
 
     def test_invitation_is_private_and_persists_after_restart(self):
         self.create()

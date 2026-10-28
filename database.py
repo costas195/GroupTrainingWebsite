@@ -13,7 +13,7 @@ from psycopg import sql
 
 
 INTEGRITY_ERRORS = (sqlite3.IntegrityError, psycopg.IntegrityError)
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 # All domain writes in this single-studio app share a transaction lock. This
 # preserves cross-class overlap, membership, and last-seat rules across workers.
 WRITE_LOCK = 704319820
@@ -38,7 +38,7 @@ class Connection:
         if self.postgres:
             tls = {'sslmode': config.get('DATABASE_SSLMODE', 'require')} if config.get('APP_ENV') == 'production' else {}
             self.raw = psycopg.connect(config['DATABASE_URL'], row_factory=row_factory,
-                                       connect_timeout=10, application_name='form-portal',
+                                       connect_timeout=10, application_name='nf-hybrid-portal',
                                        options='-c statement_timeout=20000 -c lock_timeout=15000', **tls)
             if config.get('DATABASE_SCHEMA'):
                 schema = config['DATABASE_SCHEMA']
@@ -90,7 +90,8 @@ def migrate(connection):
     if current > SCHEMA_VERSION:
         raise RuntimeError('Database schema is newer than this app. Deploy a compatible version.')
     migrations = Path(__file__).parent / 'migrations'
-    for version, filename in ((1, '001_initial.sql'), (2, '002_sessions_and_login_limits.sql')):
+    for version, filename in ((1, '001_initial.sql'), (2, '002_sessions_and_login_limits.sql'),
+                              (3, '003_usernames_and_temporary_passwords.sql')):
         if current >= version:
             continue
         source = (migrations / filename).read_text(encoding='utf-8')
@@ -103,6 +104,11 @@ def migrate(connection):
         for statement in source.split(';'):
             if statement.strip():
                 connection.execute(statement)
+        if version == 3:
+            from accounts import generate_username
+            for user in connection.execute('SELECT id,name FROM users ORDER BY id').fetchall():
+                connection.execute('UPDATE users SET username=? WHERE id=?',
+                                   (generate_username(connection, user['name']), user['id']))
         connection.execute('INSERT INTO schema_migrations(version,applied_at) VALUES(?,?)', (version, int(time.time())))
     # Caller commits bootstrap and migration together under the same write lock.
 
